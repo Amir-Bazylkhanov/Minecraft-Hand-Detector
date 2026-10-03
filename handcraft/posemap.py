@@ -383,12 +383,21 @@ class PoseMapEngine:
                     if rs:
                         self._cursor_center = self._cursor_anchor
                 elif rs:
+                    # Fixed-speed inventory cursor: the axis-aligned .2
+                    # palm deadzone decides which axes are active; the
+                    # active offset axes give only the direction, which is
+                    # normalized so the TOTAL speed is 210 px/s no matter
+                    # how far the wrist travels — a diagonal moves at the
+                    # same total speed as a single axis. Center stops.
                     palm = palm_size(right)
                     x = (right[0][0] - self._cursor_center[0]) / palm
                     y = (right[0][1] - self._cursor_center[1]) / palm
-                    rate = self._rate
-                    cap = 700 * min(dt, .08)
-                    dx, dy = rate(x) * cap, rate(y) * cap
+                    x = x if abs(x) > .2 else 0.
+                    y = y if abs(y) > .2 else 0.
+                    length = math.hypot(x, y)
+                    if length:
+                        step = 210 * min(dt, .08) / length
+                        dx, dy = x * step, y * step
                 # Inventory attack: a thumb extend->fold cycle clicks the
                 # slot once at the CURRENT cursor — the click frame never
                 # carries an absolute position; when the wrist is

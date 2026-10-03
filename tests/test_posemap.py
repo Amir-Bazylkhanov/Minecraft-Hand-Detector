@@ -494,25 +494,47 @@ class TestPoseMap(unittest.TestCase):
             self.assertIsNone(result.cursor)
             self.assertEqual((result.look_dx, result.look_dy), (0, 0))
 
-    def test_inventory_cursor_deadzone_fixed_center_and_dt_rate(self):
+    def test_inventory_cursor_deadzone_fixed_speed_and_dt_cap(self):
         self.anchor_cursor()
         # inside the .2 palm deadzone (dx=.03 / palm .2 = .15): nothing
         result = self.engine.update({"right": moved(self.point, dx=.03)}, .2, True)
         self.assertEqual((result.look_dx, result.look_dy), (0, 0))
-        # beyond the deadzone: signed rate (offset - .2) * 700 * dt
+        # beyond the deadzone: fixed 210 px/s total speed * dt
         result = self.engine.update({"right": moved(self.point, dx=.1)}, .25, True)
         self.assertEqual(result.look_dy, 0)
-        self.assertAlmostEqual(result.look_dx, (.1 / .2 - .2) * 700 * .05)
-        # the rate scales with dt (clamped at .08) around the same fixed
-        # center, which never recenters mid-session
+        self.assertAlmostEqual(result.look_dx, 210 * .05)
+        # dt clamps at .08 around the same fixed center, which never
+        # recenters mid-session
         result = self.engine.update({"right": moved(self.point, dx=.1)}, .45, True)
-        self.assertAlmostEqual(result.look_dx, (.1 / .2 - .2) * 700 * .08)
+        self.assertAlmostEqual(result.look_dx, 210 * .08)
+        # a diagonal keeps the same TOTAL speed: magnitude is 210 * dt
         result = self.engine.update({"right": moved(self.point, dx=-.1, dy=.1)}, .5, True)
         self.assertLess(result.look_dx, 0)
         self.assertGreater(result.look_dy, 0)
+        self.assertAlmostEqual(math.hypot(result.look_dx, result.look_dy), 210 * .05)
+        self.assertAlmostEqual(result.look_dx, -result.look_dy)
         # returning to the locked center stops the movement exactly
         result = self.engine.update({"right": self.point}, .55, True)
         self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+
+    def test_inventory_cursor_speed_fixed_near_and_far(self):
+        self.anchor_cursor()
+        # near (.1 -> offset .5) and far (.25 -> offset 1.25) wrists move
+        # the cursor at the same total speed for the same dt
+        near = self.engine.update({"right": moved(self.point, dx=.1)}, .2, True)
+        self.assertAlmostEqual(near.look_dx, 210 * .05)
+        self.assertEqual(near.look_dy, 0)
+        far = self.engine.update({"right": moved(self.point, dx=.25)}, .25, True)
+        self.assertAlmostEqual(far.look_dx, near.look_dx)
+        # same on the diagonal: farther along it never increases speed
+        near_diag = self.engine.update(
+            {"right": moved(self.point, dx=.1, dy=-.1)}, .3, True)
+        self.assertAlmostEqual(math.hypot(near_diag.look_dx, near_diag.look_dy),
+                               210 * .05)
+        far_diag = self.engine.update(
+            {"right": moved(self.point, dx=.3, dy=-.3)}, .35, True)
+        self.assertAlmostEqual(math.hypot(far_diag.look_dx, far_diag.look_dy),
+                               math.hypot(near_diag.look_dx, near_diag.look_dy))
 
     def test_inventory_cursor_state_independent_from_look(self):
         # a locked gameplay look center never leaks into the menu, and a
