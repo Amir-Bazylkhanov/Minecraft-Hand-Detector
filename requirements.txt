@@ -1,0 +1,8 @@
+# Verified on PyPI (2026-10) and installed/tested in .venv on Python 3.13.6.
+# opencv-contrib-python replaces opencv-python: do NOT add plain opencv-python,
+# both ship conflicting shared cv2 files. mediapipe 1.0.1 depends on contrib.
+# cv2-enumerate-cameras lists named Windows cameras (DSHOW + MSMF) without
+# opening them, so the phone camera is selected by name, never by index.
+mediapipe==1.0.1
+opencv-contrib-python==5.0.0.93
+cv2-enumerate-cameras==1.4.0

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+models/
+handcraft_bindings.json
+handcraft_camera.json
+handcraft_camera.json.part
+tmp????????/
+handmap_test_*/
+.pytest_cache/
+.diagnostics/
