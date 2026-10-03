@@ -332,7 +332,8 @@ class HandCraftApp:
         ttk.Separator(right).pack(fill="x", pady=8)
 
         tk.Label(right,
-                 text="Inventory cursor speed (px/sec) - lower = slower",
+                 text="Inventory cursor sensitivity "
+                      "(lower = smaller movement)",
                  bg=PANEL, fg=FG).pack(anchor="w")
         self.inventory_cursor_speed_var = tk.IntVar(value=80)
         tk.Scale(right, from_=20, to=240, resolution=10,
@@ -870,7 +871,8 @@ class HandCraftApp:
             self.dispatcher.pose_engine.set_sensitivity(self.sens_var.get())
 
     def _on_inventory_cursor_speed(self, _value: str) -> None:
-        """Push the inventory cursor speed (px/sec) to the pose engine.
+        """Push the inventory cursor sensitivity (motion gain) to the pose
+        engine.
 
         Independent from the legacy Sensitivity slider: it never touches
         ``set_sensitivity``. Every hop is getattr-guarded because tk.Scale

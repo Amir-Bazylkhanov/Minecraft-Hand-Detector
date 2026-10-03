@@ -72,10 +72,14 @@ class PoseMapEngine:
         self.sensitivity = value
 
     def set_inventory_cursor_speed(self, value):
-        """Set the fixed inventory cursor speed in px/s, clamped to
-        20..240. Invalid values (non-numeric, NaN, infinite) are rejected
-        and leave the current speed unchanged; the speed survives
-        reset() so a menu reopen keeps the tuned pace."""
+        """Set the inventory cursor motion gain, clamped to 20..240.
+
+        The value is a gain, not a speed: the cursor integrates measured
+        wrist displacement at ``value * 5`` pixels per palm-width of hand
+        motion (about 400 px/palm at the default 80), only while the hand
+        actually moves. Invalid values (non-numeric, NaN, infinite) are
+        rejected and leave the current gain unchanged; the gain survives
+        reset() so a menu reopen keeps the tuned sensitivity."""
         try:
             value = float(value)
         except (TypeError, ValueError):
@@ -129,6 +133,9 @@ class PoseMapEngine:
         self._right_anchor = None
         self._cursor_center = None
         self._cursor_anchor = None
+        self._cursor_previous = None
+        self._cursor_pending = (0.0, 0.0)
+        self._cursor_fraction = (0.0, 0.0)
         self._prev_inventory = False
         return events
 
@@ -148,7 +155,7 @@ class PoseMapEngine:
 
     @staticmethod
     def _rate(v):
-        """Signed joystick rate for look/cursor: .2 palm deadzone, the
+        """Signed joystick rate for gameplay look: .2 palm deadzone, the
         excess capped at 1.5 palm-widths."""
         return math.copysign(min(1.5, max(0., abs(v) - .2)), v)
 
@@ -230,6 +237,8 @@ class PoseMapEngine:
             self._poses.pop("right", None)
             self._right_center = self._right_anchor = None
             self._cursor_center = self._cursor_anchor = None
+            self._cursor_previous = None
+            self._cursor_pending = self._cursor_fraction = (0.0, 0.0)
             self._inv_armed = self._inv_out = False
             self._inv_cursor_pause_until = None
         self._prev_inventory = inventory_open
@@ -253,6 +262,8 @@ class PoseMapEngine:
             self._left_thumb_out = False
             self._right_center = self._right_anchor = None
             self._cursor_center = self._cursor_anchor = None
+            self._cursor_previous = None
+            self._cursor_pending = self._cursor_fraction = (0.0, 0.0)
             labels = {"left": "Inventory chord", "right": "Inventory chord"}
             events.extend(self._stop_cycle(now))
             self._inv_armed = self._inv_out = False
@@ -382,6 +393,8 @@ class PoseMapEngine:
             self._right_center = self._right_anchor = None
         if not inventory_open or rp != "point":
             self._cursor_center = self._cursor_anchor = None
+            self._cursor_previous = None
+            self._cursor_pending = self._cursor_fraction = (0.0, 0.0)
         if self._hotbar or shaka:
             labels["right"] = "Hotbar: fold thumb left / pinky right"
         elif rp == "point":
@@ -414,40 +427,66 @@ class PoseMapEngine:
                     self._inv_cursor_pause_until = None
                 paused = (self._inv_armed
                           or self._inv_cursor_pause_until is not None)
-                # Relative inventory cursor: same wrist joystick as
-                # gameplay look, with its own center/anchor. A fresh
-                # session tracks the drifting wrist during the .12s
-                # settle; the first stable point frame locks the center
-                # and emits nothing, so opening a menu never teleports
-                # the cursor. Afterwards wrist displacement from the
-                # locked center emits relative movement (move_relative)
-                # — never an absolute position. While the thumb click
-                # pause is active the center/anchor still settles
-                # normally but the frozen cursor never recenters the
-                # locked wrist; when the cooldown ends, movement resumes
-                # at the constant speed from the current wrist offset —
-                # nothing accumulates to catch up.
+                # Touchpad motion inventory cursor: only the CONSECUTIVE
+                # wrist delta moves the cursor — same signed direction,
+                # proportional diagonals — so a stationary hand stops
+                # immediately at ANY offset and steady fingertip wiggle on
+                # a still wrist moves nothing. The first point frame and
+                # every .12s settle frame only adopt the wrist baseline
+                # (the compat center/anchor still lock, but the locked
+                # center is never used to move), so opening a menu or a
+                # drifting settle never moves the cursor. While the thumb
+                # click arm/cooldown pause is active the baseline still
+                # updates EVERY frame but the frame emits ZERO, so motion
+                # during the pause is discarded and resuming never
+                # catches up. Deltas are palm-normalized and scaled by the
+                # configured gain (inventory_cursor_speed * 5, about 400
+                # px per palm at the default 80). Small deltas accumulate
+                # until their net motion exceeds .005 palm, and each
+                # frame's output is clamped to 40 px so a tracking jump
+                # can never fling the cursor. No dt multiplication:
+                # motion integrates displacement, never velocity.
+                wrist = right[0][:2]
                 if self._cursor_center is None:
-                    self._cursor_anchor = right[0][:2]
+                    self._cursor_anchor = wrist
+                    self._cursor_previous = wrist
+                    self._cursor_pending = self._cursor_fraction = (0.0, 0.0)
                     if rs:
                         self._cursor_center = self._cursor_anchor
-                elif rs and not paused:
-                    # Fixed-speed inventory cursor: the axis-aligned .2
-                    # palm deadzone decides which axes are active; the
-                    # active offset axes give only the direction, which is
-                    # normalized so the TOTAL speed is
-                    # ``inventory_cursor_speed`` px/s no matter how far
-                    # the wrist travels — a diagonal moves at the same
-                    # total speed as a single axis. Center stops.
+                elif not rs or paused:
+                    self._cursor_previous = wrist
+                    self._cursor_pending = self._cursor_fraction = (0.0, 0.0)
+                else:
                     palm = palm_size(right)
-                    x = (right[0][0] - self._cursor_center[0]) / palm
-                    y = (right[0][1] - self._cursor_center[1]) / palm
-                    x = x if abs(x) > .2 else 0.
-                    y = y if abs(y) > .2 else 0.
-                    length = math.hypot(x, y)
-                    if length:
-                        step = self.inventory_cursor_speed * min(dt, .08) / length
-                        dx, dy = x * step, y * step
+                    mx = wrist[0] - self._cursor_previous[0]
+                    my = wrist[1] - self._cursor_previous[1]
+                    self._cursor_previous = wrist
+                    # No observed motion means no output, even if a
+                    # subpixel remainder is waiting. Slow movements are
+                    # accumulated instead of being lost frame by frame.
+                    if mx or my:
+                        px, py = self._cursor_pending
+                        px, py = px + mx / palm, py + my / palm
+                        self._cursor_pending = (px, py)
+                        if math.hypot(px, py) > .005:
+                            self._cursor_pending = (0.0, 0.0)
+                            gain = self.inventory_cursor_speed * 5
+                            sx, sy = px * gain, py * gain
+                            length = math.hypot(sx, sy)
+                            if length > 40:
+                                sx, sy = sx * 40 / length, sy * 40 / length
+                            fx, fy = self._cursor_fraction
+                            # Keep rounding local to inventory: the
+                            # shared controller receives whole pixels.
+                            dx, dy = round(sx + fx), round(sy + fy)
+                            self._cursor_fraction = (sx + fx - dx,
+                                                     sy + fy - dy)
+                            # Quantization must not exceed the jump cap;
+                            # discard clipped excess rather than queue it.
+                            pixel_length = math.hypot(dx, dy)
+                            if pixel_length > 40:
+                                dx = math.trunc(dx * 40 / pixel_length)
+                                dy = math.trunc(dy * 40 / pixel_length)
             elif self._right_center is None:
                 # Fresh session: the wrist drifts during the .12s settle,
                 # so the anchor tracks it; the first stable point frame

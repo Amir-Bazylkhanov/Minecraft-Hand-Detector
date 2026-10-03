@@ -14,6 +14,25 @@ from tests.hands import moved
 
 
 class PosePipelineTests(unittest.TestCase):
+    def test_inventory_minimum_gain_slow_diagonal_reaches_adapter(self):
+        self.engine.set_inventory_state(True)
+        self.dispatch.pose_engine.set_inventory_cursor_speed(20)
+        hand = pose((0,))
+        self.feed({"right": hand}, 0)
+        self.feed({"right": hand}, .15)
+        from handcraft.geometry import palm_size
+        step = .004 * palm_size(hand)
+        for i in range(1, 21):
+            current = moved(hand, dx=step * i, dy=step * i)
+            self.feed({"right": current}, .15 + i * .02)
+        pixels = [args for name, args in self.adapter.calls if name == "move_relative"]
+        self.assertAlmostEqual(sum(x for x, y in pixels), 8, delta=1)
+        self.assertAlmostEqual(sum(y for x, y in pixels), 8, delta=1)
+        self.adapter.calls.clear()
+        for i in range(21, 41):
+            self.feed({"right": current}, .15 + i * .02)
+        self.assertNotIn("move_relative", self.adapter.kinds())
+
     def setUp(self):
         self.adapter = RecordingAdapter()
         self.focus = True
@@ -377,25 +396,46 @@ class PosePipelineTests(unittest.TestCase):
         self.feed(point, .15)
         self.feed({'right': moved(point['right'], dx=.15)}, .2)
         self.assertEqual(self.adapter.calls, [])
-        # live-armed with the focus lost: the dispatch gate disarms and
-        # the displaced frame injects nothing either
+        # live-armed with the focus lost: the still-moving frame injects
+        # nothing either — the dispatch gate disarms instead
         self.ctl.set_practice(False)
         self.focus = False
-        self.feed({'right': moved(point['right'], dx=.15)}, .25)
+        self.feed({'right': moved(point['right'], dx=.3)}, .25)
         self.assertFalse(self.ctl.armed)
         self.assertEqual(self.adapter.calls, [])
+
+    def test_inventory_cursor_moves_only_while_the_hand_moves(self):
+        self.engine.set_inventory_state(True)
+        point = {'right': pose((0,))}
+        self.feed(point, 0)
+        self.feed(point, .15)
+        self.feed(point, .2)  # settled and held still: nothing reaches the OS
+        self.assertNotIn('move_relative', self.adapter.kinds())
+        # a moving wrist injects one relative step per moving frame
+        self.feed({'right': moved(point['right'], dx=.002)}, .25)
+        self.feed({'right': moved(point['right'], dx=.004)}, .3)
+        moves = [c for c in self.adapter.calls if c[0] == 'move_relative']
+        self.assertEqual(moves, [('move_relative', (4, 0)),
+                                 ('move_relative', (4, 0))])
+        # the hand stops at the offset: the cursor stops with it
+        self.feed({'right': moved(point['right'], dx=.004)}, .35)
+        self.feed({'right': moved(point['right'], dx=.004)}, .4)
+        moves = [c for c in self.adapter.calls if c[0] == 'move_relative']
+        self.assertEqual(len(moves), 2)
 
     def test_inventory_cursor_speed_tuning_reaches_pointer_pixels(self):
         self.engine.set_inventory_state(True)
         point = {'right': pose((0,))}
         self.feed(point, 0)
         self.feed(point, .15)
-        # default speed: 80 px/s * dt=.05 rounds to a 4 px relative move
-        self.feed({'right': moved(point['right'], dx=.1)}, .2)
+        # default gain 80*5 = 400 px/palm: a .002-image (.01 palm) wrist
+        # step injects a 4 px relative move
+        hand = moved(point['right'], dx=.002)
+        self.feed({'right': hand}, .2)
         self.assertIn(('move_relative', (4, 0)), self.adapter.calls)
-        # tuning the engine speed scales the injected pixels accordingly
+        # tuning the engine gain scales the injected pixels accordingly
         self.dispatch.pose_engine.set_inventory_cursor_speed(240)
-        self.feed({'right': moved(point['right'], dx=.1)}, .25)
+        self.feed({'right': moved(hand, dx=.002)}, .25)
         self.assertIn(('move_relative', (12, 0)), self.adapter.calls)
 
 

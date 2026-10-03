@@ -494,47 +494,145 @@ class TestPoseMap(unittest.TestCase):
             self.assertIsNone(result.cursor)
             self.assertEqual((result.look_dx, result.look_dy), (0, 0))
 
-    def test_inventory_cursor_deadzone_fixed_speed_and_dt_cap(self):
+    def test_inventory_cursor_stationary_at_any_offset_stops(self):
         self.anchor_cursor()
-        # inside the .2 palm deadzone (dx=.03 / palm .2 = .15): nothing
-        result = self.engine.update({"right": moved(self.point, dx=.03)}, .2, True)
-        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
-        # beyond the deadzone: fixed 80 px/s total speed * dt (default)
-        result = self.engine.update({"right": moved(self.point, dx=.1)}, .25, True)
-        self.assertEqual(result.look_dy, 0)
-        self.assertAlmostEqual(result.look_dx, 80 * .05)
-        # dt clamps at .08 around the same fixed center, which never
-        # recenters mid-session
-        result = self.engine.update({"right": moved(self.point, dx=.1)}, .45, True)
-        self.assertAlmostEqual(result.look_dx, 80 * .08)
-        # a diagonal keeps the same TOTAL speed: magnitude is 80 * dt
-        result = self.engine.update({"right": moved(self.point, dx=-.1, dy=.1)}, .5, True)
-        self.assertLess(result.look_dx, 0)
-        self.assertGreater(result.look_dy, 0)
-        self.assertAlmostEqual(math.hypot(result.look_dx, result.look_dy), 80 * .05)
-        self.assertAlmostEqual(result.look_dx, -result.look_dy)
-        # returning to the locked center stops the movement exactly
-        result = self.engine.update({"right": self.point}, .55, True)
-        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        # walk the wrist away in small steps: each moving frame moves
+        hand = self.point
+        for i in range(1, 6):
+            hand = moved(hand, dx=.002)
+            result = self.engine.update({"right": hand}, .15 + i * .05, True)
+            self.assertGreater(result.look_dx, 0)
+        # held still at the offset: the cursor stops immediately, with no
+        # drift back toward any center and no decay tail
+        for t in (.5, .55, .6):
+            result = self.engine.update({"right": hand}, t, True)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
 
-    def test_inventory_cursor_speed_fixed_near_and_far(self):
+    def test_inventory_cursor_linear_deltas_gain_and_diagonal(self):
         self.anchor_cursor()
-        # near (.1 -> offset .5) and far (.25 -> offset 1.25) wrists move
-        # the cursor at the same total speed for the same dt
-        near = self.engine.update({"right": moved(self.point, dx=.1)}, .2, True)
-        self.assertAlmostEqual(near.look_dx, 80 * .05)
-        self.assertEqual(near.look_dy, 0)
-        far = self.engine.update({"right": moved(self.point, dx=.25)}, .25, True)
-        self.assertAlmostEqual(far.look_dx, near.look_dx)
-        # same on the diagonal: farther along it never increases speed
-        near_diag = self.engine.update(
-            {"right": moved(self.point, dx=.1, dy=-.1)}, .3, True)
-        self.assertAlmostEqual(math.hypot(near_diag.look_dx, near_diag.look_dy),
-                               80 * .05)
-        far_diag = self.engine.update(
-            {"right": moved(self.point, dx=.3, dy=-.3)}, .35, True)
-        self.assertAlmostEqual(math.hypot(far_diag.look_dx, far_diag.look_dy),
-                               math.hypot(near_diag.look_dx, near_diag.look_dy))
+        # consecutive equal wrist deltas move the cursor by equal pixel
+        # steps: the gain is inventory_cursor_speed * 5 (400 px per palm
+        # at the default 80), with no dt multiplication — frame spacing
+        # does not shape the output
+        hand = self.point
+        for i, t in enumerate((.2, .25, .35)):  # uneven dt, same output
+            hand = moved(hand, dx=.01)
+            result = self.engine.update({"right": hand}, t, True)
+            self.assertAlmostEqual(result.look_dx, 20.)
+            self.assertEqual(result.look_dy, 0)
+        # same signed direction: a diagonal delta moves both axes
+        # proportionally at the same per-axis gain
+        hand = moved(hand, dx=.01, dy=.01)
+        result = self.engine.update({"right": hand}, .4, True)
+        self.assertAlmostEqual(result.look_dx, 20.)
+        self.assertAlmostEqual(result.look_dy, 20.)
+        # reversed motion: same magnitude, opposite sign
+        hand = moved(hand, dx=-.01, dy=-.01)
+        result = self.engine.update({"right": hand}, .45, True)
+        self.assertAlmostEqual(result.look_dx, -20.)
+        self.assertAlmostEqual(result.look_dy, -20.)
+
+    def test_inventory_cursor_no_sustained_velocity(self):
+        self.anchor_cursor()
+        # one quick wrist move, then a dead stop: only the moving frame
+        # emits — no velocity memory and nothing accumulates over frames
+        fast = moved(self.point, dx=.02)
+        result = self.engine.update({"right": fast}, .2, True)
+        self.assertGreater(result.look_dx, 0)
+        for t in (.25, .3, .35, .4):
+            result = self.engine.update({"right": fast}, t, True)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+
+    def test_inventory_cursor_sub_noise_jitter_suppressed(self):
+        self.anchor_cursor()
+        # Alternating noise around one position has no net displacement.
+        for i in range(1, 21):
+            hand = moved(self.point, dx=.0005 if i % 2 else 0,
+                         dy=-.0005 if i % 2 else 0)
+            result = self.engine.update({"right": hand}, .15 + i * .05, True)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+
+    def test_inventory_slow_motion_accumulates_without_stationary_creep(self):
+        self.anchor_cursor()
+        palm = palm_size(self.point)
+        total = 0
+        for i in range(1, 21):
+            hand = moved(self.point, dx=.004 * palm * i)
+            result = self.engine.update({"right": hand}, .15 + i * .02, True)
+            total += result.look_dx
+        self.assertAlmostEqual(total, 32, delta=1)
+        for i in range(21, 41):
+            result = self.engine.update({"right": hand}, .15 + i * .02, True)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+
+    def test_inventory_pause_discards_pending_and_fractional_motion(self):
+        self.engine.set_inventory_cursor_speed(20)
+        self.anchor_cursor()
+        palm = palm_size(self.point)
+        tiny = moved(self.point, dx=.004 * palm, dy=.004 * palm)
+        self.engine.update({"right": tiny}, .2, True)
+        self.assertNotEqual(self.engine._cursor_fraction, (0, 0))
+        armed = moved(thumb_hand(.9, point=True), dx=.1)
+        self.engine.update({"right": armed}, .25, True)
+        self.assertEqual(self.engine._cursor_pending, (0, 0))
+        self.assertEqual(self.engine._cursor_fraction, (0, 0))
+        folded = moved(thumb_hand(.5, point=True), dx=.2)
+        self.assertEqual(self.engine.update({"right": folded}, .3, True).click, "left")
+        for t in (.35, .45, .5):
+            result = self.engine.update({"right": folded}, t, True)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        next_hand = moved(folded, dx=.01)
+        result = self.engine.update({"right": next_hand}, .55, True)
+        self.assertEqual((result.look_dx, result.look_dy), (5, 0))
+
+    def test_inventory_motion_remainders_clear_on_session_boundaries(self):
+        for boundary in ("reset", "loss", "pose", "menu", "chord"):
+            with self.subTest(boundary=boundary):
+                engine = PoseMapEngine()
+                engine.update({"right": self.point}, 0, True)
+                engine.update({"right": self.point}, .15, True)
+                engine.update({"right": moved(self.point, dx=.0005)}, .2, True)
+                self.assertNotEqual(engine._cursor_pending, (0, 0))
+                if boundary == "reset":
+                    engine.reset()
+                elif boundary == "loss":
+                    engine.update({}, .25, True)
+                elif boundary == "pose":
+                    engine.update({"right": pose((0, 1))}, .25, True)
+                elif boundary == "menu":
+                    engine.update({"right": self.point}, .25, False)
+                else:
+                    engine.update({"left": pose((0, 1, 2, 3), True),
+                                   "right": pose((0, 1, 2, 3), True)}, .25, True)
+                self.assertEqual(engine._cursor_pending, (0, 0))
+                self.assertEqual(engine._cursor_fraction, (0, 0))
+
+    def test_inventory_cursor_clamps_tracking_jumps_to_40px(self):
+        self.anchor_cursor()
+        # a huge one-frame wrist jump (tracking glitch) emits at most a
+        # 40 px step, direction preserved
+        result = self.engine.update({"right": moved(self.point, dx=.1)}, .2, True)
+        self.assertAlmostEqual(result.look_dx, 40.)
+        self.assertEqual(result.look_dy, 0)
+        result = self.engine.update(
+            {"right": moved(self.point, dx=.2, dy=.1)}, .25, True)
+        self.assertLessEqual(math.hypot(result.look_dx, result.look_dy), 40.)
+        self.assertGreater(math.hypot(result.look_dx, result.look_dy), 39.)
+        self.assertAlmostEqual(result.look_dx, result.look_dy)
+
+    def test_inventory_cursor_settle_drift_never_moves_or_jumps(self):
+        # the wrist drifts during the .12s settle: every settle frame only
+        # re-baselines, the lock frame emits nothing, and the settle drift
+        # is never retroactively integrated afterwards
+        drift1 = moved(self.point, dx=.05)
+        drift2 = moved(self.point, dx=.1)
+        for t, hand in ((0, drift1), (.05, drift2), (.15, drift2)):
+            result = self.engine.update({"right": hand}, t, True)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        # the first post-lock delta is measured from the LAST settle frame
+        result = self.engine.update({"right": moved(drift2, dx=.01)}, .2, True)
+        self.assertAlmostEqual(result.look_dx, 20.)
+        self.assertEqual(result.look_dy, 0)
 
     def test_inventory_cursor_speed_defaults_to_80(self):
         self.assertAlmostEqual(self.engine.inventory_cursor_speed, 80.)
@@ -543,15 +641,13 @@ class TestPoseMap(unittest.TestCase):
         self.anchor_cursor()
         self.engine.set_inventory_cursor_speed(120)
         self.assertAlmostEqual(self.engine.inventory_cursor_speed, 120.)
-        result = self.engine.update({"right": moved(self.point, dx=.1)}, .2, True)
-        self.assertAlmostEqual(result.look_dx, 120 * .05)
-        # constant total speed still holds at the tuned rate: diagonal
-        # magnitude equals single-axis speed for the same dt
-        diag = self.engine.update(
-            {"right": moved(self.point, dx=.1, dy=-.1)}, .25, True)
-        self.assertAlmostEqual(math.hypot(diag.look_dx, diag.look_dy), 120 * .05)
-        # the .2 deadzone is unchanged by the tuning
-        result = self.engine.update({"right": moved(self.point, dx=.03)}, .3, True)
+        # the tuned value is a motion gain: 120 * 5 = 600 px per palm of
+        # consecutive wrist displacement, in the hand's own direction
+        result = self.engine.update({"right": moved(self.point, dx=.01)}, .2, True)
+        self.assertAlmostEqual(result.look_dx, 30.)
+        self.assertEqual(result.look_dy, 0)
+        # a still hand still stops immediately, whatever the tuning
+        result = self.engine.update({"right": moved(self.point, dx=.01)}, .25, True)
         self.assertEqual((result.look_dx, result.look_dy), (0, 0))
 
     def test_set_inventory_cursor_speed_clamps_to_20_240(self):
@@ -573,8 +669,9 @@ class TestPoseMap(unittest.TestCase):
         self.engine.reset()
         self.assertAlmostEqual(self.engine.inventory_cursor_speed, 150.)
         self.anchor_cursor()
-        result = self.engine.update({"right": moved(self.point, dx=.1)}, .2, True)
-        self.assertAlmostEqual(result.look_dx, 150 * .05)
+        # 150 * 5 = 750 px per palm: a .01-image (.05 palm) step moves 37.5
+        result = self.engine.update({"right": moved(self.point, dx=.01)}, .2, True)
+        self.assertAlmostEqual(result.look_dx, 37.5, delta=.5)
 
     def test_inventory_cursor_state_independent_from_look(self):
         # a locked gameplay look center never leaks into the menu, and a
@@ -646,6 +743,7 @@ class TestPoseMap(unittest.TestCase):
                 engine.update({"left": self.open, "right": self.open}, .25, True)
             else:
                 engine.reset()
+            self.assertIsNone(engine._cursor_previous, end)
             elsewhere = moved(self.point, dx=.3)
             engine.update({"right": elsewhere}, .3, True)
             result = engine.update({"right": elsewhere}, .45, True)
@@ -699,22 +797,32 @@ class TestPoseMap(unittest.TestCase):
         self.assertIsNone(result.click)
         self.assertEqual((result.look_dx, result.look_dy), (0, 0))
 
-    def test_inventory_click_cooldown_holds_100ms_then_resumes_without_catchup(self):
+    def test_inventory_click_pause_discards_motion_resume_small_delta(self):
+        # locked session on a point with the thumb already out
         self.engine.update({"right": thumb_hand(.9, point=True)}, 0, True)
         self.engine.update({"right": thumb_hand(.9, point=True)}, .15, True)
-        result = self.engine.update({"right": thumb_hand(.5, point=True)}, .2, True)
+        # the wrist slides during the armed phase: zero output, but the
+        # baseline tracks every paused frame so nothing can catch up
+        slid = moved(thumb_hand(.9, point=True), dx=.1)
+        result = self.engine.update({"right": slid}, .2, True)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        self.assertIsNone(result.click)
+        # the completing fold clicks immediately on that very frame and
+        # still emits no movement
+        folded = moved(thumb_hand(.5, point=True), dx=.15)
+        result = self.engine.update({"right": folded}, .25, True)
         self.assertEqual(result.click, "left")
-        # the fold clicked at the settled center; the wrist is now held
-        # far away, but the 100ms cooldown keeps the cursor frozen
-        far = moved(thumb_hand(.5, point=True), dx=.2)
-        for t in (.25, .29):
-            result = self.engine.update({"right": far}, t, True)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        # the 100ms cooldown keeps discarding motion with zero catchup
+        cooled = moved(thumb_hand(.5, point=True), dx=.2)
+        for t in (.3, .34):
+            result = self.engine.update({"right": cooled}, t, True)
             self.assertEqual((result.look_dx, result.look_dy), (0, 0))
             self.assertIsNone(result.click)
-        # after the cooldown the same offset resumes at the constant
-        # speed — one frame's worth of movement, no accumulated catchup
-        result = self.engine.update({"right": far}, .34, True)
-        self.assertAlmostEqual(result.look_dx, 80 * .05)
+        # resume: only the small delta from the most recent paused frame
+        # moves the cursor — everything slid during the pause is forgotten
+        result = self.engine.update({"right": moved(cooled, dx=.01)}, .4, True)
+        self.assertAlmostEqual(result.look_dx, 20.)
         self.assertEqual(result.look_dy, 0)
 
     def test_inventory_pause_and_click_state_clear_on_loss_nonpoint_and_mode(self):
@@ -731,10 +839,12 @@ class TestPoseMap(unittest.TestCase):
                 engine.update({"right": self.v}, .25, True)
             else:
                 engine.update({"right": thumb_hand(.5, point=True)}, .25)  # menu closed
-            # the pause and the click cycle state die at the boundary
+            # the pause, the click cycle state and the motion baseline all
+            # die at the boundary
             self.assertIsNone(engine._inv_cursor_pause_until, clear)
             self.assertFalse(engine._inv_armed, clear)
             self.assertFalse(engine._inv_out, clear)
+            self.assertIsNone(engine._cursor_previous, clear)
             # a fresh cycle afterwards still clicks (state was cleared,
             # not stuck), and a re-settled point moves normally — no
             # stale pause survives the boundary either

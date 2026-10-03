@@ -402,5 +402,24 @@ class InventoryCursorSpeedTests(unittest.TestCase):
         app._on_inventory_cursor_speed("80")  # must not raise
 
 
+class InventoryCursorLabelTests(unittest.TestCase):
+    """The slider is a sensitivity (motion gain), not a px/sec speed: the
+    product label says so, while the internal var/callback API is kept."""
+
+    def test_slider_label_is_sensitivity_without_speed_units(self):
+        import inspect
+        from handcraft import app as app_module
+        src = inspect.getsource(app_module.HandCraftApp._build_ui)
+        self.assertIn("Inventory cursor sensitivity", src)
+        self.assertIn("lower = smaller movement", src)
+        self.assertNotIn("px/sec", src)
+
+    def test_internal_var_and_callback_names_unchanged(self):
+        self.assertTrue(hasattr(HandCraftApp, "_on_inventory_cursor_speed"))
+        app = make_app()
+        app.inventory_cursor_speed_var = _Var(80)
+        self.assertEqual(app.inventory_cursor_speed_var.get(), 80)
+
+
 if __name__ == "__main__":
     unittest.main()
