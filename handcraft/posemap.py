@@ -379,7 +379,7 @@ class PoseMapEngine:
                 click = "right"
                 self._use_latched = True
         elif rp in ("fist", "thumb") and not inventory_open and not self._hotbar_block_mining:
-            labels["right"] = "Mine / attack"
+            labels["right"] = "Thumb attack gesture"
         if rp != "v":
             self._use_latched = False
         if not (inventory_open and rp == "point"):

@@ -440,7 +440,7 @@ class ThumbFeedbackRealWidthTest(unittest.TestCase):
     POSE_LABELS = ("Sneak joystick", "Move joystick",
                    "Hotbar: fold thumb left / pinky right",
                    "Inventory cursor", "Look", "Use / place",
-                   "Mine / attack")
+                   "Thumb attack gesture")
 
     def test_label_plus_thumb_feedback_fit_480px(self):
         try:
