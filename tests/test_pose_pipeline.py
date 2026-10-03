@@ -344,20 +344,19 @@ class PosePipelineTests(unittest.TestCase):
         # the expired hold's release is ordered before the fresh click
         self.assertLess(calls.index(('left_up', None)), clicks[1])
 
-    def test_inventory_thumb_click_moves_relative_before_click(self):
+    def test_inventory_thumb_click_never_moves_relative(self):
         self.engine.set_inventory_state(True)
         # lock the cursor session on a still point with the thumb out,
-        # then fold with the wrist displaced: that frame's relative
-        # movement dispatches BEFORE the click; no absolute cursor ever
+        # then fold with the wrist displaced: the click pause suppresses
+        # that frame's movement entirely — the click lands at the CURRENT
+        # cursor and no relative movement is dispatched at all
         point = thumb_hand(.9, point=True)
         self.feed({'right': point}, 0)
         self.feed({'right': point}, .15)
         self.feed({'right': moved(thumb_hand(.5, point=True), dx=.1)}, .2)
-        kinds = [c[0] for c in self.adapter.calls]
-        self.assertIn('move_relative', kinds)
         self.assertIn(('click_mouse', 'left'), self.adapter.calls)
-        self.assertLess(kinds.index('move_relative'), kinds.index('click_mouse'))
-        self.assertNotIn('move_cursor', kinds)
+        self.assertNotIn('move_relative', self.adapter.kinds())
+        self.assertNotIn('move_cursor', self.adapter.kinds())
 
     def test_inventory_early_thumb_click_never_moves_cursor(self):
         self.engine.set_inventory_state(True)

@@ -654,17 +654,97 @@ class TestPoseMap(unittest.TestCase):
             result = engine.update({"right": elsewhere}, .5, True)
             self.assertEqual((result.look_dx, result.look_dy), (0, 0), end)
 
-    def test_inventory_click_frame_carries_relative_movement(self):
+    def test_inventory_click_frame_never_moves_cursor(self):
         # locked session, thumb out; the fold lands with the wrist
-        # displaced: the click frame emits that frame's relative movement
-        # (dispatched before the click) — never an absolute position
+        # displaced: the click frame emits ZERO movement — the frozen
+        # cursor clicks the slot it was already on — and never an
+        # absolute position
         self.engine.update({"right": thumb_hand(.9, point=True)}, 0, True)
         self.engine.update({"right": thumb_hand(.9, point=True)}, .15, True)
         result = self.engine.update(
             {"right": moved(thumb_hand(.5, point=True), dx=.1)}, .2, True)
         self.assertEqual(result.click, "left")
-        self.assertGreater(result.look_dx, 0)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
         self.assertIsNone(result.cursor)
+
+    def test_inventory_thumb_arm_band_and_fold_pause_cursor_movement(self):
+        # locked cursor session on a still thumb-folded point
+        self.anchor_cursor()
+        # the extension frame itself is paused: wrist motion moves nothing
+        result = self.engine.update(
+            {"right": moved(thumb_hand(.9, point=True), dx=.1)}, .2, True)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        self.assertIsNone(result.click)
+        self.assertIsNone(result.cursor)
+        # the whole armed/out phase stays paused while the wrist moves
+        result = self.engine.update(
+            {"right": moved(thumb_hand(.9, point=True), dx=-.1, dy=.1)}, .25, True)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        self.assertIsNone(result.click)
+        # a band dip keeps the pause: no movement, no chatter
+        result = self.engine.update(
+            {"right": moved(thumb_hand(.6, point=True), dx=.1)}, .3, True)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        self.assertIsNone(result.click)
+        # the completing fold clicks once on that very frame — the pause
+        # never delays the click — and still emits no movement
+        result = self.engine.update(
+            {"right": moved(thumb_hand(.5, point=True), dy=.1)}, .35, True)
+        self.assertEqual(result.click, "left")
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        self.assertEqual(result.events, ())
+        # holding the fold with the wrist moving never re-clicks or moves
+        result = self.engine.update(
+            {"right": moved(thumb_hand(.5, point=True), dx=-.1)}, .4, True)
+        self.assertIsNone(result.click)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+
+    def test_inventory_click_cooldown_holds_100ms_then_resumes_without_catchup(self):
+        self.engine.update({"right": thumb_hand(.9, point=True)}, 0, True)
+        self.engine.update({"right": thumb_hand(.9, point=True)}, .15, True)
+        result = self.engine.update({"right": thumb_hand(.5, point=True)}, .2, True)
+        self.assertEqual(result.click, "left")
+        # the fold clicked at the settled center; the wrist is now held
+        # far away, but the 100ms cooldown keeps the cursor frozen
+        far = moved(thumb_hand(.5, point=True), dx=.2)
+        for t in (.25, .29):
+            result = self.engine.update({"right": far}, t, True)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+            self.assertIsNone(result.click)
+        # after the cooldown the same offset resumes at the constant
+        # speed — one frame's worth of movement, no accumulated catchup
+        result = self.engine.update({"right": far}, .34, True)
+        self.assertAlmostEqual(result.look_dx, 80 * .05)
+        self.assertEqual(result.look_dy, 0)
+
+    def test_inventory_pause_and_click_state_clear_on_loss_nonpoint_and_mode(self):
+        for clear in ("loss", "nonpoint", "mode"):
+            engine = PoseMapEngine()
+            engine.update({"right": thumb_hand(.9, point=True)}, 0, True)
+            engine.update({"right": thumb_hand(.9, point=True)}, .15, True)
+            result = engine.update({"right": thumb_hand(.5, point=True)}, .2, True)
+            self.assertEqual(result.click, "left", clear)
+            self.assertIsNotNone(engine._inv_cursor_pause_until, clear)
+            if clear == "loss":
+                engine.update({}, .25, True)
+            elif clear == "nonpoint":
+                engine.update({"right": self.v}, .25, True)
+            else:
+                engine.update({"right": thumb_hand(.5, point=True)}, .25)  # menu closed
+            # the pause and the click cycle state die at the boundary
+            self.assertIsNone(engine._inv_cursor_pause_until, clear)
+            self.assertFalse(engine._inv_armed, clear)
+            self.assertFalse(engine._inv_out, clear)
+            # a fresh cycle afterwards still clicks (state was cleared,
+            # not stuck), and a re-settled point moves normally — no
+            # stale pause survives the boundary either
+            engine.update({"right": thumb_hand(.9, point=True)}, .3, True)
+            result = engine.update({"right": thumb_hand(.5, point=True)}, .35, True)
+            self.assertEqual(result.click, "left", clear)
+            engine.update({"right": self.point}, .4, True)
+            engine.update({"right": self.point}, .55, True)
+            result = engine.update({"right": moved(self.point, dx=.1)}, .6, True)
+            self.assertGreater(result.look_dx, 0, clear)
 
     def test_hotbar_folds_require_shaka_and_rearm(self):
         shaka, previous, next_hand = pose((3,), True), pose((3,)), pose((), True)

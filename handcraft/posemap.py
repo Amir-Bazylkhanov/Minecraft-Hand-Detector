@@ -108,6 +108,7 @@ class PoseMapEngine:
         self._cycle_out = False
         self._inv_armed = False
         self._inv_out = False
+        self._inv_cursor_pause_until = None
         self._last_time = None
         self._poses = {}
         self._use_latched = False
@@ -230,6 +231,7 @@ class PoseMapEngine:
             self._right_center = self._right_anchor = None
             self._cursor_center = self._cursor_anchor = None
             self._inv_armed = self._inv_out = False
+            self._inv_cursor_pause_until = None
         self._prev_inventory = inventory_open
         ls = self._stable("left", lp, now)
         rs = self._stable("right", rp, now)
@@ -254,6 +256,7 @@ class PoseMapEngine:
             labels = {"left": "Inventory chord", "right": "Inventory chord"}
             events.extend(self._stop_cycle(now))
             self._inv_armed = self._inv_out = False
+            self._inv_cursor_pause_until = None
             if not self._both_latched:
                 kind = GestureKind.CLOSE_INVENTORY if inventory_open else GestureKind.OPEN_INVENTORY
                 events.append(GestureEvent(kind, now))
@@ -384,6 +387,33 @@ class PoseMapEngine:
         elif rp == "point":
             labels["right"] = "Inventory cursor" if inventory_open else "Look"
             if inventory_open:
+                # Inventory attack FIRST: thumb edges and the click are
+                # decided before the movement decision so the arm frame
+                # and the completing fold frame emit ZERO movement. A
+                # thumb extend->fold cycle clicks the slot once at the
+                # CURRENT cursor — the click frame never carries an
+                # absolute position and never moves the cursor either.
+                # The inventory cycle has its own hysteresis state —
+                # nothing crosses into or out of gameplay. No burst
+                # promotion here.
+                self._inv_out, rose, fell = self._thumb_edges(right, self._inv_out)
+                if rose:
+                    self._inv_armed = True
+                if fell and self._inv_armed:
+                    self._inv_armed = False
+                    click = "left"
+                    # 100ms settle cooldown after a successful fold: the
+                    # wrist often keeps drifting right after the click,
+                    # and that drift must not nudge the cursor off the
+                    # clicked slot. Bounded and finite (now is validated
+                    # above); cleared on reset, hand loss, non-point and
+                    # both menu edges, so it never crosses a boundary.
+                    self._inv_cursor_pause_until = now + .1
+                if (self._inv_cursor_pause_until is not None
+                        and now >= self._inv_cursor_pause_until):
+                    self._inv_cursor_pause_until = None
+                paused = (self._inv_armed
+                          or self._inv_cursor_pause_until is not None)
                 # Relative inventory cursor: same wrist joystick as
                 # gameplay look, with its own center/anchor. A fresh
                 # session tracks the drifting wrist during the .12s
@@ -391,12 +421,17 @@ class PoseMapEngine:
                 # and emits nothing, so opening a menu never teleports
                 # the cursor. Afterwards wrist displacement from the
                 # locked center emits relative movement (move_relative)
-                # — never an absolute position.
+                # — never an absolute position. While the thumb click
+                # pause is active the center/anchor still settles
+                # normally but the frozen cursor never recenters the
+                # locked wrist; when the cooldown ends, movement resumes
+                # at the constant speed from the current wrist offset —
+                # nothing accumulates to catch up.
                 if self._cursor_center is None:
                     self._cursor_anchor = right[0][:2]
                     if rs:
                         self._cursor_center = self._cursor_anchor
-                elif rs:
+                elif rs and not paused:
                     # Fixed-speed inventory cursor: the axis-aligned .2
                     # palm deadzone decides which axes are active; the
                     # active offset axes give only the direction, which is
@@ -413,19 +448,6 @@ class PoseMapEngine:
                     if length:
                         step = self.inventory_cursor_speed * min(dt, .08) / length
                         dx, dy = x * step, y * step
-                # Inventory attack: a thumb extend->fold cycle clicks the
-                # slot once at the CURRENT cursor — the click frame never
-                # carries an absolute position; when the wrist is
-                # displaced, that frame's relative movement is emitted
-                # with (and dispatched before) the click. The inventory
-                # cycle has its own hysteresis state — nothing crosses
-                # into or out of gameplay. No burst promotion here.
-                self._inv_out, rose, fell = self._thumb_edges(right, self._inv_out)
-                if rose:
-                    self._inv_armed = True
-                if fell and self._inv_armed:
-                    self._inv_armed = False
-                    click = "left"
             elif self._right_center is None:
                 # Fresh session: the wrist drifts during the .12s settle,
                 # so the anchor tracks it; the first stable point frame
@@ -453,6 +475,7 @@ class PoseMapEngine:
             self._use_latched = False
         if not (inventory_open and rp == "point"):
             self._inv_armed = self._inv_out = False
+            self._inv_cursor_pause_until = None
 
         # Gameplay attack: with a right point/fist/thumb (never V, open,
         # pinky/hotbar or neutral) the thumb extend->fold cycle is the only
