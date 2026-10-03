@@ -112,6 +112,9 @@ class PoseMapEngine:
         self._left_dir = (0, 0)
         self._right_center = None
         self._right_anchor = None
+        self._cursor_center = None
+        self._cursor_anchor = None
+        self._prev_inventory = False
         return events
 
     def _clear_hotbar(self, unblock=False):
@@ -127,6 +130,12 @@ class PoseMapEngine:
             since = now
         self._poses[side] = (pose, since)
         return now - since >= dwell - 1e-9
+
+    @staticmethod
+    def _rate(v):
+        """Signed joystick rate for look/cursor: .2 palm deadzone, the
+        excess capped at 1.5 palm-widths."""
+        return math.copysign(min(1.5, max(0., abs(v) - .2)), v)
 
     @staticmethod
     def _axis(value, current, enter=.40, exit=.25):
@@ -194,6 +203,20 @@ class PoseMapEngine:
         left, right = hands.get("left"), hands.get("right")
         lp, _lt = _shape(left)
         rp, rt = _shape(right)
+        inventory_open = bool(inventory_open)
+        if inventory_open != self._prev_inventory:
+            # Mode edge: the shared right pose dwell must NOT carry across
+            # the boundary — a point held continuously through an open or
+            # close would otherwise lock the new mode's center only frames
+            # in and move the cursor/view immediately. Clear the right
+            # dwell, both right-hand sessions and the mode-owned click
+            # state so the new mode settles a fresh .12s in BOTH
+            # directions. The initial mode settles the same way.
+            self._poses.pop("right", None)
+            self._right_center = self._right_anchor = None
+            self._cursor_center = self._cursor_anchor = None
+            self._inv_armed = self._inv_out = False
+        self._prev_inventory = inventory_open
         ls = self._stable("left", lp, now)
         rs = self._stable("right", rp, now)
         labels = {"left": "Neutral", "right": "Neutral"}
@@ -213,6 +236,7 @@ class PoseMapEngine:
             self._left_dir = (0, 0)
             self._left_thumb_out = False
             self._right_center = self._right_anchor = None
+            self._cursor_center = self._cursor_anchor = None
             labels = {"left": "Inventory chord", "right": "Inventory chord"}
             events.extend(self._stop_cycle(now))
             self._inv_armed = self._inv_out = False
@@ -333,18 +357,43 @@ class PoseMapEngine:
                             self._hotbar_ready = False
         # A right look session lives only while the right hand points in
         # gameplay. Any other pose, hand loss, or an open inventory ends
-        # it; the next point session re-anchors from scratch.
+        # it; the next point session re-anchors from scratch. The
+        # inventory cursor session is the mirror image: it lives only
+        # while the right hand points in an OPEN menu, and its anchors
+        # are fully independent so no center leaks across the boundary.
         if inventory_open or rp != "point":
             self._right_center = self._right_anchor = None
+        if not inventory_open or rp != "point":
+            self._cursor_center = self._cursor_anchor = None
         if self._hotbar or shaka:
             labels["right"] = "Hotbar: fold thumb left / pinky right"
         elif rp == "point":
             labels["right"] = "Inventory cursor" if inventory_open else "Look"
             if inventory_open:
-                if rs:
-                    cursor = tuple(min(1., max(0., v)) for v in right[8][:2])
-                # Inventory attack: the point moves the cursor; a thumb
-                # extend->fold cycle clicks the slot once. The inventory
+                # Relative inventory cursor: same wrist joystick as
+                # gameplay look, with its own center/anchor. A fresh
+                # session tracks the drifting wrist during the .12s
+                # settle; the first stable point frame locks the center
+                # and emits nothing, so opening a menu never teleports
+                # the cursor. Afterwards wrist displacement from the
+                # locked center emits relative movement (move_relative)
+                # — never an absolute position.
+                if self._cursor_center is None:
+                    self._cursor_anchor = right[0][:2]
+                    if rs:
+                        self._cursor_center = self._cursor_anchor
+                elif rs:
+                    palm = palm_size(right)
+                    x = (right[0][0] - self._cursor_center[0]) / palm
+                    y = (right[0][1] - self._cursor_center[1]) / palm
+                    rate = self._rate
+                    cap = 700 * min(dt, .08)
+                    dx, dy = rate(x) * cap, rate(y) * cap
+                # Inventory attack: a thumb extend->fold cycle clicks the
+                # slot once at the CURRENT cursor — the click frame never
+                # carries an absolute position; when the wrist is
+                # displaced, that frame's relative movement is emitted
+                # with (and dispatched before) the click. The inventory
                 # cycle has its own hysteresis state — nothing crosses
                 # into or out of gameplay. No burst promotion here.
                 self._inv_out, rose, fell = self._thumb_edges(right, self._inv_out)
@@ -353,10 +402,6 @@ class PoseMapEngine:
                 if fell and self._inv_armed:
                     self._inv_armed = False
                     click = "left"
-                    # The fold can complete before the .12s pose dwell:
-                    # emit the current clamped tip cursor with the click
-                    # so the dispatcher moves the cursor before clicking.
-                    cursor = tuple(min(1., max(0., v)) for v in right[8][:2])
             elif self._right_center is None:
                 # Fresh session: the wrist drifts during the .12s settle,
                 # so the anchor tracks it; the first stable point frame
@@ -370,9 +415,9 @@ class PoseMapEngine:
                 palm = palm_size(right)
                 x = (right[0][0] - self._right_center[0]) / palm
                 y = (right[0][1] - self._right_center[1]) / palm
-                def rate(v):
-                    return math.copysign(min(1.5, max(0., abs(v) - .2)), v)
-                dx, dy = rate(x) * 700 * min(dt, .08), rate(y) * 700 * min(dt, .08)
+                rate = self._rate
+                cap = 700 * min(dt, .08)
+                dx, dy = rate(x) * cap, rate(y) * cap
         elif rp == "v" and not inventory_open:
             labels["right"] = "Use / place"
             if rs and not self._use_latched:

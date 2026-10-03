@@ -1,9 +1,9 @@
 """Cosmetic camera control-zone overlay drawn on the mirrored preview.
 
 ``draw_control_overlay(rgb, hands, state)`` paints the movement joystick
-zone (left hand), the look zone (right hand), hotbar slot hints, per-hand
-finger labels and a mode caption onto the already-mirrored RGB preview
-frame. cv2 is imported lazily inside the draw call so importing this
+zone (left hand), the look zone (right hand), the inventory wrist-cursor
+zone, hotbar slot hints, per-hand finger labels and a mode caption onto
+the already-mirrored RGB preview frame. cv2 is imported lazily inside the draw call so importing this
 module stays cheap and testable without native deps. All drawing uses
 thin lines and small text backgrounds - it must never fill the frame
 opaquely, and the caller wraps the call so a cosmetic failure never
@@ -17,11 +17,13 @@ re-derived here.
 State snapshot keys (all optional, missing means "draw nothing extra"):
     left_center:    (x, y) | None - movement joystick neutral center
     right_center:   (x, y) | None - look neutral center
+    cursor_center:  (x, y) | None - inventory cursor neutral center
     held_keys:      tuple of currently held key names ("W", "A", ...)
     labels:         {"left": str, "right": str} finger/pose labels
-    inventory_open: bool - hide joystick/look zones, show cursor caption
+    inventory_open: bool - hide world zones, show the wrist cursor zone
     hotbar_active:  bool - annotate thumb/pinky tips as slot steppers
     left_ready:     bool - False shows the "hold still" centering caption
+    cursor_ready:   bool - False shows the cursor centering caption
 
 Each valid hand also gets a raw thumb-gap readout (OUT / FOLDED /
 BETWEEN plus the gap ratio) on its pose-label top row. This is pure
@@ -48,6 +50,7 @@ except ImportError:  # fallback while the shared geometry helper lands
 ENTER_DEADZONE = 0.40    # left joystick engage box, x and y
 RELEASE_DEADZONE = 0.25  # inner release box (dotted outline)
 LOOK_DEADZONE = 0.20     # right-hand look deadzone
+CURSOR_DEADZONE = 0.20   # inventory wrist-cursor deadzone
 
 # Colors are RGB (the preview frame is RGB, not BGR).
 ACTIVE_COLOR = (60, 230, 60)     # bright green: actively held key
@@ -209,6 +212,40 @@ def _draw_right_zone(cv2, rgb, hand, state, w: int, h: int) -> None:
         _text(cv2, rgb, "LOOK", cx + dx + 6, cy, RIGHT_ZONE_COLOR)
 
 
+def _draw_cursor_zone(cv2, rgb, hand, state, w: int, h: int) -> None:
+    """Inventory cursor: right-wrist marker plus the deadzone box around
+    the entry center, in the same compact language as the look zone."""
+    palm = palm_size(hand)
+    wx, wy = hand[0][0] * w, hand[0][1] * h
+    cv2.circle(rgb, (int(wx), int(wy)), 4, RIGHT_ZONE_COLOR, _THICKNESS)
+
+    center = state.get("cursor_center")
+    if center is not None:
+        cx, cy = center[0] * w, center[1] * h
+        dx, dy = CURSOR_DEADZONE * palm * w, CURSOR_DEADZONE * palm * h
+        cv2.rectangle(rgb, (int(cx - dx), int(cy - dy)),
+                      (int(cx + dx), int(cy + dy)),
+                      RIGHT_ZONE_COLOR, _THICKNESS)
+        # Fixed entry center (small cross) vs the current wrist marker.
+        icx, icy = int(cx), int(cy)
+        cv2.line(rgb, (icx - 5, icy), (icx + 5, icy),
+                 RIGHT_ZONE_COLOR, _THICKNESS)
+        cv2.line(rgb, (icx, icy - 5), (icx, icy + 5),
+                 RIGHT_ZONE_COLOR, _THICKNESS)
+        _text(cv2, rgb, "CURSOR", cx + dx + 6, cy, RIGHT_ZONE_COLOR)
+
+    if not state.get("cursor_ready", True):
+        caption = "Hold point still to center"
+        tw, _, baseline = _measure(cv2, caption)
+        if center is not None:
+            # Above the deadzone box, centered on it: the baseline sits
+            # clear of the box top so it never meets the CURSOR label.
+            _text(cv2, rgb, caption, cx - tw / 2,
+                  cy - dy - baseline - 4, RIGHT_ZONE_COLOR)
+        else:
+            _text(cv2, rgb, caption, wx + 8, wy - 10, RIGHT_ZONE_COLOR)
+
+
 def draw_control_overlay(rgb, hands: Mapping[str, Sequence[Point]] | None,
                          state: dict | None) -> None:
     """Draw control-zone hints on the mirrored RGB preview, in place.
@@ -233,7 +270,7 @@ def draw_control_overlay(rgb, hands: Mapping[str, Sequence[Point]] | None,
     # Top rows, stacked so they never overlap each other or the zones:
     # row 1 compact hint caption, rows 2/3 per-hand pose status labels.
     if inventory:
-        caption = "Point to cursor; thumb out-in to click"
+        caption = "Point, then move wrist; thumb out-in to click"
     else:
         caption = "Move your WRIST; open hand to recenter"
     tw, _, _ = _measure(cv2, caption)
@@ -258,7 +295,12 @@ def draw_control_overlay(rgb, hands: Mapping[str, Sequence[Point]] | None,
             x += _measure(cv2, str(label))[0] + 14
         _text(cv2, rgb, f"{tag} thumb {word} {gap:.2f}", x, row, color)
 
-    if not inventory:
+    if inventory:
+        # Menus own the cursor: world joystick/look zones stay hidden and
+        # only the right wrist cursor zone is shown.
+        if right_ok:
+            _draw_cursor_zone(cv2, rgb, right, state, w, h)
+    else:
         # Joystick/look zones are hidden while menus own the cursor.
         if left_ok:
             _draw_left_zone(cv2, rgb, left, state, w, h, held)

@@ -1069,6 +1069,10 @@ class HandCraftApp:
         right_center = right_locked or getattr(pe, "_right_anchor", None)
         if right_center is not None:
             right_center = tuple(right_center)
+        cursor_locked = getattr(pe, "_cursor_center", None)
+        cursor_center = cursor_locked or getattr(pe, "_cursor_anchor", None)
+        if cursor_center is not None:
+            cursor_center = tuple(cursor_center)
         if pose is not None:
             held_keys = tuple(getattr(pose, "held_keys", None) or ())
             labels = dict(getattr(pose, "labels", None) or {})
@@ -1080,12 +1084,14 @@ class HandCraftApp:
         snapshot = {
             "left_center": left_locked or getattr(pe, "_left_anchor", None),
             "right_center": right_center,
+            "cursor_center": cursor_center,
             "held_keys": held_keys,
             "labels": labels,
             "inventory_open": self.engine.inventory_believed is True,
             "hotbar_active": hotbar_active,
             "left_ready": left_locked is not None,
             "right_ready": right_locked is not None,
+            "cursor_ready": cursor_locked is not None,
         }
         worker.control_overlay_state = snapshot
 

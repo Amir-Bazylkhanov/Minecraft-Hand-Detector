@@ -351,9 +351,15 @@ class TestPoseMap(unittest.TestCase):
         self.assertEqual(self.engine.update({"right": self.point}, .15).look_dx, 0)
         result = self.engine.update({"right": moved(self.point, dx=.15)}, .2)
         self.assertGreater(result.look_dx, 0)
+        # opening the menu ends the look session; a fresh inventory point
+        # session re-anchors silently — relative movement only after the
+        # new center locks, and never an absolute cursor position
         result = self.engine.update({"right": self.point}, .25, True)
-        self.assertIsNotNone(result.cursor)
-        self.assertEqual(result.look_dx, 0)
+        self.assertIsNone(result.cursor)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        result = self.engine.update({"right": self.point}, .4, True)
+        self.assertIsNone(result.cursor)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
 
     def anchor_right(self):
         """Start a right point session held still so the look center locks."""
@@ -437,7 +443,7 @@ class TestPoseMap(unittest.TestCase):
         self.assertGreater(result.look_dx, 0)
         elsewhere = moved(self.point, dx=.3)
         result = self.engine.update({"right": elsewhere}, .25, True)
-        self.assertIsNotNone(result.cursor)
+        self.assertIsNone(result.cursor)
         self.assertEqual(result.look_dx, 0)
         # the menu closes while still pointing; the session restarts here
         self.assert_repoint_elsewhere_neutral(.3)
@@ -461,6 +467,142 @@ class TestPoseMap(unittest.TestCase):
         result = self.engine.update({"right": moved(self.point, dx=.1)}, .2)
         self.assertGreater(result.look_dx, 0)
         self.assert_repoint_elsewhere_neutral(2.)
+
+    def anchor_cursor(self):
+        """Open a menu and hold a right point still so the relative
+        inventory cursor center locks at the neutral wrist."""
+        self.engine.update({"right": self.point}, 0, True)
+        self.engine.update({"right": self.point}, .15, True)
+
+    def assert_cursor_repoint_neutral(self, t):
+        """A fresh inventory point session held still never moves the
+        cursor and never emits an absolute position."""
+        elsewhere = moved(self.point, dx=.3, dy=.3)
+        first = self.engine.update({"right": elsewhere}, t, True)
+        locked = self.engine.update({"right": elsewhere}, t + .15, True)
+        settled = self.engine.update({"right": elsewhere}, t + .25, True)
+        for result in (first, locked, settled):
+            self.assertIsNone(result.cursor)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+
+    def test_inventory_cursor_neutral_entry_never_teleports(self):
+        # entering the menu pointing from anywhere — even with the wrist
+        # drifting during the settle — emits no cursor and no movement
+        hand = moved(self.point, dx=.3, dy=-.2)
+        for t in (0, .05, .15, .25):
+            result = self.engine.update({"right": hand}, t, True)
+            self.assertIsNone(result.cursor)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+
+    def test_inventory_cursor_deadzone_fixed_center_and_dt_rate(self):
+        self.anchor_cursor()
+        # inside the .2 palm deadzone (dx=.03 / palm .2 = .15): nothing
+        result = self.engine.update({"right": moved(self.point, dx=.03)}, .2, True)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        # beyond the deadzone: signed rate (offset - .2) * 700 * dt
+        result = self.engine.update({"right": moved(self.point, dx=.1)}, .25, True)
+        self.assertEqual(result.look_dy, 0)
+        self.assertAlmostEqual(result.look_dx, (.1 / .2 - .2) * 700 * .05)
+        # the rate scales with dt (clamped at .08) around the same fixed
+        # center, which never recenters mid-session
+        result = self.engine.update({"right": moved(self.point, dx=.1)}, .45, True)
+        self.assertAlmostEqual(result.look_dx, (.1 / .2 - .2) * 700 * .08)
+        result = self.engine.update({"right": moved(self.point, dx=-.1, dy=.1)}, .5, True)
+        self.assertLess(result.look_dx, 0)
+        self.assertGreater(result.look_dy, 0)
+        # returning to the locked center stops the movement exactly
+        result = self.engine.update({"right": self.point}, .55, True)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+
+    def test_inventory_cursor_state_independent_from_look(self):
+        # a locked gameplay look center never leaks into the menu, and a
+        # locked cursor center never leaks back into gameplay
+        self.anchor_right()
+        self.assertGreater(
+            self.engine.update({"right": moved(self.point, dx=.1)}, .2).look_dx, 0)
+        self.assert_cursor_repoint_neutral(.25)
+        # menu closed: the gameplay session also restarts from scratch
+        self.assert_repoint_elsewhere_neutral(.6)
+
+    def test_continuous_point_world_to_inventory_settles_fresh(self):
+        # gameplay point held still locks the look center at t=.15
+        self.engine.update({"right": self.point}, 0)
+        self.engine.update({"right": self.point}, .15)
+        # the menu opens while the SAME point continues, wrist drifting:
+        # the old dwell must not lock the cursor center only frames in —
+        # entry and everything within .12s emits nothing, and the drift
+        # is adopted as the anchor
+        drift1 = moved(self.point, dx=.2)
+        drift2 = moved(self.point, dx=.25)
+        for t, hand in ((.2, drift1), (.25, drift2), (.3, drift2)):
+            result = self.engine.update({"right": hand}, t, True)
+            self.assertIsNone(result.cursor)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+            self.assertIsNone(self.engine._cursor_center)
+        # the .12s lock frame itself emits nothing (center = latest drift)
+        result = self.engine.update({"right": drift2}, .32, True)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        self.assertEqual(self.engine._cursor_center, drift2[0][:2])
+        # only displacement AFTER the lock moves the cursor
+        result = self.engine.update({"right": moved(drift2, dx=.1)}, .37, True)
+        self.assertGreater(result.look_dx, 0)
+        self.assertIsNone(result.cursor)
+
+    def test_continuous_point_inventory_to_world_settles_fresh(self):
+        # inventory point held still locks the cursor center at t=.15
+        self.engine.update({"right": self.point}, 0, True)
+        self.engine.update({"right": self.point}, .15, True)
+        # the menu closes while the SAME point continues, wrist drifting:
+        # the look session settles fresh too — no lock, no movement
+        drift1 = moved(self.point, dx=.2)
+        drift2 = moved(self.point, dx=.25)
+        for t, hand in ((.2, drift1), (.25, drift2), (.3, drift2)):
+            result = self.engine.update({"right": hand}, t)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+            self.assertIsNone(self.engine._right_center)
+        # the .12s lock frame itself emits nothing (center = latest drift)
+        result = self.engine.update({"right": drift2}, .32)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+        self.assertEqual(self.engine._right_center, drift2[0][:2])
+        # only displacement AFTER the lock turns the view
+        result = self.engine.update({"right": moved(drift2, dx=.1)}, .37)
+        self.assertGreater(result.look_dx, 0)
+
+    def test_inventory_cursor_recenters_on_exit_loss_chord_and_reset(self):
+        for end in ("exit", "loss", "chord", "reset"):
+            engine = PoseMapEngine()
+            engine.update({"right": self.point}, 0, True)
+            engine.update({"right": self.point}, .15, True)
+            moved_point = moved(self.point, dx=.1)
+            self.assertGreater(
+                engine.update({"right": moved_point}, .2, True).look_dx, 0)
+            if end == "exit":
+                engine.update({"right": self.point}, .25)  # menu closed
+            elif end == "loss":
+                engine.update({}, .25)
+            elif end == "chord":
+                engine.update({"left": self.open, "right": self.open}, .25, True)
+            else:
+                engine.reset()
+            elsewhere = moved(self.point, dx=.3)
+            engine.update({"right": elsewhere}, .3, True)
+            result = engine.update({"right": elsewhere}, .45, True)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0), end)
+            self.assertIsNone(result.cursor, end)
+            result = engine.update({"right": elsewhere}, .5, True)
+            self.assertEqual((result.look_dx, result.look_dy), (0, 0), end)
+
+    def test_inventory_click_frame_carries_relative_movement(self):
+        # locked session, thumb out; the fold lands with the wrist
+        # displaced: the click frame emits that frame's relative movement
+        # (dispatched before the click) — never an absolute position
+        self.engine.update({"right": thumb_hand(.9, point=True)}, 0, True)
+        self.engine.update({"right": thumb_hand(.9, point=True)}, .15, True)
+        result = self.engine.update(
+            {"right": moved(thumb_hand(.5, point=True), dx=.1)}, .2, True)
+        self.assertEqual(result.click, "left")
+        self.assertGreater(result.look_dx, 0)
+        self.assertIsNone(result.cursor)
 
     def test_hotbar_folds_require_shaka_and_rearm(self):
         shaka, previous, next_hand = pose((3,), True), pose((3,)), pose((), True)
@@ -872,11 +1014,12 @@ class TestPoseMap(unittest.TestCase):
         self.assertEqual(result.events, ())
 
     def test_inventory_point_thumb_cycle_clicks_once_and_v_never_does(self):
-        tip = thumb_hand(.5, point=True)[8][:2]
         self.engine.update({"right": thumb_hand(.5, point=True)}, 0, True)
         result = self.engine.update({"right": thumb_hand(.5, point=True)}, .15, True)
-        # the cursor remains the absolute index-tip position
-        self.assertEqual(result.cursor, tip)
+        # the cursor is relative now: a still point locks silently and no
+        # absolute position is ever emitted
+        self.assertIsNone(result.cursor)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
         self.assertIsNone(result.click)
         # extend->fold on the point clicks the slot once
         self.assertIsNone(self.engine.update({"right": thumb_hand(.9, point=True)}, .2, True).click)
@@ -894,13 +1037,15 @@ class TestPoseMap(unittest.TestCase):
         self.engine.update({"right": self.v}, .45, True)
         self.assertIsNone(self.engine.update({"right": self.v}, .6, True).click)
 
-    def test_inventory_thumb_click_emits_cursor_before_stability(self):
+    def test_inventory_thumb_click_before_stability_never_emits_cursor(self):
         # first point frame extends the thumb; the fold lands before the
-        # .12s pose dwell — the click still carries the clamped tip cursor
+        # .12s pose dwell — the click still fires, at the CURRENT cursor:
+        # no absolute position, no teleport, and no relative movement yet
         self.engine.update({"right": thumb_hand(.9, point=True)}, 0, True)
         result = self.engine.update({"right": thumb_hand(.5, point=True)}, .05, True)
         self.assertEqual(result.click, "left")
-        self.assertEqual(result.cursor, thumb_hand(.5, point=True)[8][:2])
+        self.assertIsNone(result.cursor)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
 
     def test_late_fold_after_lease_expiry_releases_hold_and_clicks_fresh(self):
         engine = self.promote_hold()  # hold promoted, last cycle at .4

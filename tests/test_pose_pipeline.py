@@ -128,22 +128,28 @@ class PosePipelineTests(unittest.TestCase):
         self.ctl.release_all('retry')
         self.assertFalse(self.ctl.held_keys)
 
-    def test_inventory_chord_then_cursor_and_thumb_cycle_slot_click(self):
+    def test_inventory_chord_then_relative_cursor_and_thumb_cycle_slot_click(self):
         palms = {'left': pose((0, 1, 2, 3), True), 'right': pose((0, 1, 2, 3), True)}
         self.feed(palms, 0)
         self.assertTrue(self.engine.inventory_believed)
         point = {'right': thumb_hand(.5, point=True)}
         self.feed(point, .1)
         self.feed(point, .25)
-        self.assertIn('move_cursor', self.adapter.kinds())
+        # a still point re-anchors silently: no absolute cursor, no move
+        self.assertNotIn('move_cursor', self.adapter.kinds())
+        self.assertNotIn('move_relative', self.adapter.kinds())
+        # wrist displacement from the locked center moves relatively
+        self.feed({'right': moved(point['right'], dx=.1)}, .3)
+        self.assertIn('move_relative', self.adapter.kinds())
+        self.assertNotIn('move_cursor', self.adapter.kinds())
         # V no longer clicks slots in the inventory
         v = {'right': pose((0, 1))}
-        self.feed(v, .3)
-        self.feed(v, .45)
+        self.feed(v, .35)
+        self.feed(v, .5)
         self.assertNotIn('click_mouse', self.adapter.kinds())
         # the point's thumb extend->fold cycle clicks the slot instead
-        self.feed({'right': thumb_hand(.9, point=True)}, .5)
-        self.feed({'right': thumb_hand(.5, point=True)}, .55)
+        self.feed({'right': thumb_hand(.9, point=True)}, .55)
+        self.feed({'right': thumb_hand(.5, point=True)}, .6)
         self.assertIn(('click_mouse', 'left'), self.adapter.calls)
         self.assertNotIn(('click_mouse', 'right'), self.adapter.calls)
 
@@ -338,16 +344,47 @@ class PosePipelineTests(unittest.TestCase):
         # the expired hold's release is ordered before the fresh click
         self.assertLess(calls.index(('left_up', None)), clicks[1])
 
-    def test_inventory_thumb_click_moves_cursor_before_click(self):
+    def test_inventory_thumb_click_moves_relative_before_click(self):
+        self.engine.set_inventory_state(True)
+        # lock the cursor session on a still point with the thumb out,
+        # then fold with the wrist displaced: that frame's relative
+        # movement dispatches BEFORE the click; no absolute cursor ever
+        point = thumb_hand(.9, point=True)
+        self.feed({'right': point}, 0)
+        self.feed({'right': point}, .15)
+        self.feed({'right': moved(thumb_hand(.5, point=True), dx=.1)}, .2)
+        kinds = [c[0] for c in self.adapter.calls]
+        self.assertIn('move_relative', kinds)
+        self.assertIn(('click_mouse', 'left'), self.adapter.calls)
+        self.assertLess(kinds.index('move_relative'), kinds.index('click_mouse'))
+        self.assertNotIn('move_cursor', kinds)
+
+    def test_inventory_early_thumb_click_never_moves_cursor(self):
         self.engine.set_inventory_state(True)
         # extend on the first point frame, fold before the .12s dwell:
-        # the click still dispatches the current cursor position first
+        # the click dispatches at the CURRENT cursor — no movement at all
         self.feed({'right': thumb_hand(.9, point=True)}, 0)
         self.feed({'right': thumb_hand(.5, point=True)}, .05)
-        kinds = [c[0] for c in self.adapter.calls]
-        self.assertIn('move_cursor', kinds)
         self.assertIn(('click_mouse', 'left'), self.adapter.calls)
-        self.assertLess(kinds.index('move_cursor'), kinds.index('click_mouse'))
+        self.assertNotIn('move_cursor', self.adapter.kinds())
+        self.assertNotIn('move_relative', self.adapter.kinds())
+
+    def test_inventory_relative_cursor_gated_by_practice_and_focus(self):
+        self.engine.set_inventory_state(True)
+        # practice mode recognizes everything but injects nothing
+        self.ctl.set_practice(True)
+        point = {'right': pose((0,))}
+        self.feed(point, 0)
+        self.feed(point, .15)
+        self.feed({'right': moved(point['right'], dx=.15)}, .2)
+        self.assertEqual(self.adapter.calls, [])
+        # live-armed with the focus lost: the dispatch gate disarms and
+        # the displaced frame injects nothing either
+        self.ctl.set_practice(False)
+        self.focus = False
+        self.feed({'right': moved(point['right'], dx=.15)}, .25)
+        self.assertFalse(self.ctl.armed)
+        self.assertEqual(self.adapter.calls, [])
 
 
 class MouseAdapterTests(unittest.TestCase):

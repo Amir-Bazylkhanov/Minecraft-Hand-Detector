@@ -43,11 +43,13 @@ def base_state(**over):
     state = {
         "left_center": (0.3, 0.5),
         "right_center": (0.7, 0.5),
+        "cursor_center": None,
         "held_keys": (),
         "labels": {},
         "inventory_open": False,
         "hotbar_active": False,
         "left_ready": True,
+        "cursor_ready": True,
     }
     state.update(over)
     return state
@@ -106,20 +108,140 @@ class ControlOverlayTest(unittest.TestCase):
                  if c.args[3] == control_overlay.LEFT_ZONE_COLOR]
         self.assertIn(expected, rects)
 
-    def test_inventory_hides_zones_with_caption(self):
+    def test_inventory_hides_world_zones_with_caption(self):
+        """Inventory hides the left world zones entirely: no joystick box,
+        no arrows, no W/S/A/D or jump hints — just the cursor caption."""
         hands = {"left": make_hand(0.3, 0.5), "right": make_hand(0.7, 0.5)}
         draw_control_overlay(self.img, hands,
                              base_state(inventory_open=True))
-        zone_rects = [c for c in self.cv2.rectangle.call_args_list
-                      if c.args[3] in (control_overlay.LEFT_ZONE_COLOR,
-                                       control_overlay.RIGHT_ZONE_COLOR)]
-        self.assertEqual(zone_rects, [])
+        left_rects = [c for c in self.cv2.rectangle.call_args_list
+                      if c.args[3] == control_overlay.LEFT_ZONE_COLOR]
+        self.assertEqual(left_rects, [])
         self.cv2.arrowedLine.assert_not_called()
         drawn = self.texts()
+        for caption in ("W Forward", "S Back", "A Left", "D Right",
+                        "JUMP: thumb out", "JUMP: SPACE held", "LOOK"):
+            self.assertNotIn(caption, drawn)
         self.assertTrue(
-            any("Point to cursor" in t and "thumb out-in" in t
+            any("Point, then move wrist" in t and "thumb out-in" in t
                 and "V" not in t for t in drawn))
         self.assertTrue(any("inventory" in t for t in drawn))
+
+    def test_inventory_cursor_zone_drawn(self):
+        """Inventory shows the right-wrist cursor: deadzone box, entry
+        cross, CURSOR label and wrist marker — the look zone's language."""
+        from handcraft.geometry import palm_size
+        hand = make_hand(0.7, 0.5)
+        palm = palm_size(hand)
+        draw_control_overlay(
+            self.img, {"left": make_hand(0.3, 0.5), "right": hand},
+            base_state(inventory_open=True, cursor_center=(0.7, 0.5)))
+        cx, cy = 0.7 * W, 0.5 * H
+        dx = control_overlay.CURSOR_DEADZONE * palm * W
+        dy = control_overlay.CURSOR_DEADZONE * palm * H
+        expected = ((int(cx - dx), int(cy - dy)), (int(cx + dx), int(cy + dy)))
+        rects = [(c.args[1], c.args[2])
+                 for c in self.cv2.rectangle.call_args_list
+                 if c.args[3] == control_overlay.RIGHT_ZONE_COLOR]
+        self.assertIn(expected, rects)
+        icx, icy = int(cx), int(cy)
+        lines = [(c.args[1], c.args[2]) for c in self.cv2.line.call_args_list
+                 if c.args[3] == control_overlay.RIGHT_ZONE_COLOR]
+        self.assertIn(((icx - 5, icy), (icx + 5, icy)), lines)  # cross h
+        self.assertIn(((icx, icy - 5), (icx, icy + 5)), lines)  # cross v
+        centers = [c.args[1] for c in self.cv2.circle.call_args_list]
+        self.assertIn((icx, icy), centers)  # wrist marker at the wrist
+        self.assertIn("CURSOR", self.texts())
+
+    def test_cursor_deadzone_matches_look_size(self):
+        """The .2 palm deadzone is the same compact size as the look zone."""
+        self.assertEqual(control_overlay.CURSOR_DEADZONE,
+                         control_overlay.LOOK_DEADZONE)
+        self.assertAlmostEqual(control_overlay.CURSOR_DEADZONE, 0.20)
+
+    def test_cursor_not_ready_centering_caption(self):
+        """While the cursor center is still settling, the overlay asks to
+        hold the point still; once ready the caption disappears."""
+        hand = make_hand(0.7, 0.5)
+        state = base_state(inventory_open=True, cursor_center=(0.7, 0.5),
+                           cursor_ready=False)
+        draw_control_overlay(self.img, {"right": hand}, state)
+        self.assertIn("Hold point still to center", self.texts())
+        self.cv2.putText.reset_mock()
+        draw_control_overlay(self.img, {"right": hand},
+                             base_state(inventory_open=True,
+                                        cursor_center=(0.7, 0.5),
+                                        cursor_ready=True))
+        self.assertNotIn("Hold point still to center", self.texts())
+
+    def test_cursor_centering_caption_above_box_clear_of_cursor_label(self):
+        """Regression (480x360, wrist on the center): the centering caption
+        sits centered above the deadzone box — its baseline clears the box
+        top — instead of beside the wrist where it met the CURSOR label."""
+        from handcraft.geometry import palm_size
+        hand = make_hand(0.5, 0.5)  # wrist exactly on the center: worst case
+        palm = palm_size(hand)
+        draw_control_overlay(self.img, {"right": hand},
+                             base_state(inventory_open=True,
+                                        cursor_center=(0.5, 0.5),
+                                        cursor_ready=False))
+        calls = self.by_text()
+        caption = "Hold point still to center"
+        self.assertIn(caption, calls)
+        self.assertIn("CURSOR", calls)
+        (tw, th), baseline = fake_text_size(caption, None, None, None)
+        cx, cy = 0.5 * W, 0.5 * H
+        dy = control_overlay.CURSOR_DEADZONE * palm * H
+        x, y = calls[caption].args[2]
+        self.assertEqual(x, int(cx - tw / 2))
+        self.assertEqual(y, int(cy - dy - baseline - 4))
+        # Text bottom (baseline + descent) stays above the box top...
+        self.assertLess(y + baseline, cy - dy)
+        # ...and the caption is on a different row than the CURSOR label.
+        self.assertNotEqual(y, calls["CURSOR"].args[2][1])
+
+    def test_cursor_centering_caption_without_center_stays_at_wrist(self):
+        """No center yet: the caption falls back to the wrist-side spot,
+        where no CURSOR label or box exists to collide with."""
+        hand = make_hand(0.7, 0.5)
+        draw_control_overlay(self.img, {"right": hand},
+                             base_state(inventory_open=True,
+                                        cursor_center=None,
+                                        cursor_ready=False))
+        calls = self.by_text()
+        caption = "Hold point still to center"
+        self.assertIn(caption, calls)
+        self.assertNotIn("CURSOR", calls)
+        (tw, _), _ = fake_text_size(caption, None, None, None)
+        x, y = calls[caption].args[2]
+        # Wrist row, starting at wx + 8 unless that would leave the frame.
+        self.assertEqual(y, int(0.5 * H) - 10)
+        self.assertEqual(x, min(int(0.7 * W) + 8, W - tw - 4))
+
+    def test_cursor_zone_needs_valid_right_hand(self):
+        """No valid right hand: no cursor box, marker or centering hint."""
+        draw_control_overlay(self.img, {"left": make_hand(0.3, 0.5)},
+                             base_state(inventory_open=True,
+                                        cursor_center=(0.7, 0.5),
+                                        cursor_ready=False))
+        rects = [c for c in self.cv2.rectangle.call_args_list
+                 if c.args[3] == control_overlay.RIGHT_ZONE_COLOR]
+        self.assertEqual(rects, [])
+        drawn = self.texts()
+        self.assertNotIn("CURSOR", drawn)
+        self.assertNotIn("Hold point still to center", drawn)
+
+    def test_no_cursor_center_draws_wrist_marker_only(self):
+        """Settling before any anchor: wrist marker but no box/cross."""
+        hand = make_hand(0.7, 0.5)
+        draw_control_overlay(self.img, {"right": hand},
+                             base_state(inventory_open=True,
+                                        cursor_center=None))
+        rects = [c for c in self.cv2.rectangle.call_args_list
+                 if c.args[3] == control_overlay.RIGHT_ZONE_COLOR]
+        self.assertEqual(rects, [])
+        centers = [c.args[1] for c in self.cv2.circle.call_args_list]
+        self.assertIn((int(0.7 * W), int(0.5 * H)), centers)
 
     def test_attack_hint_gameplay_non_hotbar(self):
         """Gameplay without hotbar: right thumb cycles attack."""
@@ -441,6 +563,22 @@ class ThumbFeedbackRealWidthTest(unittest.TestCase):
                    "Hotbar: fold thumb left / pinky right",
                    "Inventory cursor", "Look", "Use / place",
                    "Thumb attack gesture")
+
+    # Top-row hint captions for both modes.
+    CAPTIONS = ("Move your WRIST; open hand to recenter",
+                "Point, then move wrist; thumb out-in to click")
+
+    def test_mode_captions_fit_480px(self):
+        try:
+            import cv2
+        except ImportError:
+            self.skipTest("real cv2 not available")
+        for caption in self.CAPTIONS:
+            with self.subTest(caption=caption):
+                tw = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX,
+                                     control_overlay._FONT_SCALE,
+                                     control_overlay._THICKNESS)[0][0]
+                self.assertLessEqual(tw, 480)
 
     def test_label_plus_thumb_feedback_fit_480px(self):
         try:

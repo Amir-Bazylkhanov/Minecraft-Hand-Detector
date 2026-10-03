@@ -36,6 +36,8 @@ class ControlOverlaySnapshotTest(unittest.TestCase):
             _left_anchor=(0.3, 0.4),
             _right_center=(0.5, 0.6),
             _right_anchor=(0.7, 0.8),
+            _cursor_center=(0.15, 0.25),
+            _cursor_anchor=(0.35, 0.45),
             centers={"right": (0.9, 0.9)},  # stale calibrated center: ignored
         )
         pose = SimpleNamespace(
@@ -50,12 +52,14 @@ class ControlOverlaySnapshotTest(unittest.TestCase):
         snap = worker.control_overlay_state
         self.assertEqual(snap["left_center"], (0.1, 0.2))
         self.assertEqual(snap["right_center"], (0.5, 0.6))
+        self.assertEqual(snap["cursor_center"], (0.15, 0.25))
         self.assertEqual(snap["held_keys"], ("w",))
         self.assertEqual(snap["labels"], {"left": "Move", "right": "Mine"})
         self.assertIs(snap["inventory_open"], True)
         self.assertIs(snap["hotbar_active"], True)
         self.assertIs(snap["left_ready"], True)
         self.assertIs(snap["right_ready"], True)
+        self.assertIs(snap["cursor_ready"], True)
 
     def test_left_anchor_fallback_and_not_ready(self):
         pe = SimpleNamespace(
@@ -164,6 +168,91 @@ class ControlOverlaySnapshotTest(unittest.TestCase):
         self.assertIsNot(snap["right_center"], locked)
         locked[0] = 0.99
         self.assertEqual(snap["right_center"], (0.11, 0.22))
+
+    def test_cursor_locked_preferred_over_anchor(self):
+        """A locked private cursor center wins over the settling anchor."""
+        pe = SimpleNamespace(
+            _left_center=None, _left_anchor=None,
+            _right_center=None, _right_anchor=None,
+            _cursor_center=(0.21, 0.22),
+            _cursor_anchor=(0.33, 0.44),
+            centers={},
+        )
+        worker = SimpleNamespace(control_overlay_state={})
+        app = _bare_app(worker=worker, pose_engine=pe)
+        app._update_control_overlay()
+        snap = worker.control_overlay_state
+        self.assertEqual(snap["cursor_center"], (0.21, 0.22))
+        self.assertIs(snap["cursor_ready"], True)
+
+    def test_cursor_anchor_fallback_and_not_ready(self):
+        """Settling: no locked cursor center yet -> the private anchor is
+        shown but the cursor reports not-ready."""
+        pe = SimpleNamespace(
+            _left_center=None, _left_anchor=None,
+            _right_center=None, _right_anchor=None,
+            _cursor_center=None,
+            _cursor_anchor=(0.33, 0.44),
+            centers={},
+        )
+        worker = SimpleNamespace(control_overlay_state={})
+        app = _bare_app(worker=worker, pose_engine=pe)
+        app._update_control_overlay()
+        snap = worker.control_overlay_state
+        self.assertEqual(snap["cursor_center"], (0.33, 0.44))
+        self.assertIs(snap["cursor_ready"], False)
+
+    def test_cursor_clearing_none(self):
+        """No cursor session (pose/mode/loss reset): the snapshot clears
+        to None and reports not-ready."""
+        pe = SimpleNamespace(
+            _left_center=None, _left_anchor=None,
+            _right_center=None, _right_anchor=None,
+            _cursor_center=None,
+            _cursor_anchor=None,
+            centers={},
+        )
+        worker = SimpleNamespace(control_overlay_state={})
+        app = _bare_app(worker=worker, pose_engine=pe)
+        app._update_control_overlay()
+        snap = worker.control_overlay_state
+        self.assertIsNone(snap["cursor_center"])
+        self.assertIs(snap["cursor_ready"], False)
+
+    def test_cursor_attrs_missing_default_to_none(self):
+        """A pose engine without the cursor attributes (older core) still
+        snapshots cleanly with cursor None/not-ready."""
+        pe = SimpleNamespace(
+            _left_center=None, _left_anchor=None,
+            _right_center=None, _right_anchor=None,
+            centers={},
+        )
+        worker = SimpleNamespace(control_overlay_state={})
+        app = _bare_app(worker=worker, pose_engine=pe)
+        app._update_control_overlay()
+        snap = worker.control_overlay_state
+        self.assertIsNone(snap["cursor_center"])
+        self.assertIs(snap["cursor_ready"], False)
+
+    def test_cursor_center_snapshot_isolation(self):
+        """The cursor center is copied into an immutable tuple: mutating
+        the engine's object afterwards cannot move the overlay's center."""
+        locked = [0.21, 0.22]
+        pe = SimpleNamespace(
+            _left_center=None, _left_anchor=None,
+            _right_center=None, _right_anchor=None,
+            _cursor_center=locked,
+            _cursor_anchor=None,
+            centers={},
+        )
+        worker = SimpleNamespace(control_overlay_state={})
+        app = _bare_app(worker=worker, pose_engine=pe)
+        app._update_control_overlay()
+        snap = worker.control_overlay_state
+        self.assertIsInstance(snap["cursor_center"], tuple)
+        self.assertIsNot(snap["cursor_center"], locked)
+        locked[0] = 0.99
+        self.assertEqual(snap["cursor_center"], (0.21, 0.22))
 
 
 if __name__ == "__main__":

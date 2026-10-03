@@ -44,13 +44,13 @@ Finger numbers: **thumb 4 · index 8 · middle 12 · ring 16 · pinky 20**. Thes
 | Same left pointing pose, wrist farther forward/up | **Sprint** while moving forward. Return to the inner zone to walk. |
 | Left hand with **thumb extended** — thumb only, while pointing, or in a V | **Hold Space** immediately to keep jumping, independent of the movement center. Fold the thumb to release. |
 | **Left V sign**: index and middle extended, ring and pinky folded | Use the same joystick while **sneaking**. |
-| **Right index only extended**, other fingers folded | Move wrist around its center to **look**. Center stops turning. In inventory, pointing moves the **cursor** and **thumb out then in left-clicks** (not the V sign or middle finger). |
+| **Right index only extended**, other fingers folded | Move wrist around its center to **look**. Center stops turning. In inventory, the **cursor stays where it was when the menu opened**; pointing settles a neutral center on your wrist (hold still briefly), then moving the wrist from that center moves the cursor — the small center dead zone keeps it still. **Thumb out then in left-clicks** (not the V sign or middle finger). |
 | **Right thumb extended then folded** — with a fist or while pointing (index may be extended for look + attack; middle/ring/pinky folded — not V, full open hand, or hotbar 🤙) | **Mine/attack**. One out-in cycle sends one timed left-click (one attack). A second cycle within **0.6 s** starts holding attack for continuous mining; each further cycle refreshes the hold. Mining ends **0.8 s** after the last cycle, or immediately on opening your hand, tracking loss, or entering a menu. After the hold ends, the next thumb out-in cycle sends a single attack click again. |
 | **Right V sign**, briefly held | **Place/use** with a right-click in the world. Leave the pose before repeating. |
 | **Both open palms shown together** | Toggle **inventory** instantly on the first recognized frame. Change pose to rearm. A single open palm or a fist does not open/close inventory. |
 | **Right thumb and pinky extended**, middle three folded | Enter hotbar selection. **Fold thumb → previous/left slot; fold pinky → next/right slot.** Restore both fingers before another step. Hotbar mode takes priority: a folded thumb steps slots, never attacks. |
 
-An open hand is neutral except when both open palms deliberately form the inventory chord. Pose changes must settle before applicable actions trigger, reducing accidental clicks during transitions. Inventory mode suppresses world movement, mining, and hotbar selection while providing cursor and click controls.
+An open hand is neutral except when both open palms deliberately form the inventory chord. Pose changes must settle before applicable actions trigger, reducing accidental clicks during transitions. Inventory mode suppresses world movement, mining, and hotbar selection while providing cursor and click controls. The inventory cursor is relative, not absolute: it never teleports to your fingertip — it stays where it was on entry and follows wrist motion from the settled center, and the preview shows that center, its dead zone, and your wrist marker.
 
 The gameplay map is currently defined in code, rather than editable through the old palm-contact configuration JSON. Legacy binding/editor modules remain for compatibility tests; their saved assignments do not customize this new pose map.
 
@@ -74,7 +74,7 @@ Real input uses native Windows `SendInput`. The foreground title must contain �
 
 Main components:
 
-- `posemap.py`: complete-pose recognition, movement/look centers, jump, sneak, sprint, use, inventory chord, and hotbar stepping.
+- `posemap.py`: complete-pose recognition, movement/look centers, jump, sneak, sprint, use, inventory chord, inventory wrist cursor, and hotbar stepping.
 - `posedispatch.py`: routes pose results through existing safety gates.
 - `guide.py`: compact semi-transparent passive Tk gesture reference.
 - `controller.py`, `adapters.py`, `win32input.py`: input lifecycle, timed key pulses, pointer controls, and OS injection.
