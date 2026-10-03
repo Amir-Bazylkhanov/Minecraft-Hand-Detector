@@ -331,6 +331,19 @@ class HandCraftApp:
 
         ttk.Separator(right).pack(fill="x", pady=8)
 
+        tk.Label(right,
+                 text="Inventory cursor speed (px/sec) - lower = slower",
+                 bg=PANEL, fg=FG).pack(anchor="w")
+        self.inventory_cursor_speed_var = tk.IntVar(value=80)
+        tk.Scale(right, from_=20, to=240, resolution=10,
+                 orient="horizontal",
+                 variable=self.inventory_cursor_speed_var,
+                 command=self._on_inventory_cursor_speed, bg=PANEL, fg=FG,
+                 troughcolor="#3a3d46", highlightthickness=0,
+                 length=200).pack(fill="x")
+
+        ttk.Separator(right).pack(fill="x", pady=8)
+
         self.inv_label = tk.Label(right, text="Inventory belief: closed",
                                   bg=PANEL, fg=FG)
         self.inv_label.pack(anchor="w")
@@ -855,6 +868,22 @@ class HandCraftApp:
         self.engine.set_sensitivity(self.sens_var.get())
         if hasattr(self.dispatcher, "pose_engine"):
             self.dispatcher.pose_engine.set_sensitivity(self.sens_var.get())
+
+    def _on_inventory_cursor_speed(self, _value: str) -> None:
+        """Push the inventory cursor speed (px/sec) to the pose engine.
+
+        Independent from the legacy Sensitivity slider: it never touches
+        ``set_sensitivity``. Every hop is getattr-guarded because tk.Scale
+        may invoke its command during early construction, before the
+        dispatcher (or its pose engine) exists, and bare test shells use a
+        dispatcher without a pose engine at all."""
+        speed_var = getattr(self, "inventory_cursor_speed_var", None)
+        dispatcher = getattr(self, "dispatcher", None)
+        pose_engine = getattr(dispatcher, "pose_engine", None)
+        setter = getattr(pose_engine, "set_inventory_cursor_speed", None)
+        if speed_var is None or setter is None:
+            return
+        setter(speed_var.get())
 
     def _open_guide(self) -> None:
         from .guide import GestureGuide

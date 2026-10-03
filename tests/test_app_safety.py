@@ -353,5 +353,54 @@ class TickErrorTests(unittest.TestCase):
         app.root.after.assert_called()  # tick rescheduled even after error
 
 
+class InventoryCursorSpeedTests(unittest.TestCase):
+    def test_callback_pushes_var_value_to_pose_engine(self):
+        app = make_app()
+        pose_engine = mock.MagicMock()
+        app.dispatcher.pose_engine = pose_engine
+        app.inventory_cursor_speed_var = _Var(80)  # slider default
+
+        app._on_inventory_cursor_speed("80")
+        pose_engine.set_inventory_cursor_speed.assert_called_once_with(80)
+
+        # The callback reads the IntVar at call time, not the tk string arg.
+        app.inventory_cursor_speed_var.set(240)
+        app._on_inventory_cursor_speed("ignored string arg")
+        pose_engine.set_inventory_cursor_speed.assert_called_with(240)
+        self.assertEqual(
+            pose_engine.set_inventory_cursor_speed.call_count, 2)
+
+    def test_callback_keeps_legacy_sensitivity_separate(self):
+        app = make_app()
+        pose_engine = mock.MagicMock()
+        app.dispatcher.pose_engine = pose_engine
+        app.inventory_cursor_speed_var = _Var(40)
+        app.sens_var = _Var(1.5)
+
+        app._on_inventory_cursor_speed("40")
+        pose_engine.set_sensitivity.assert_not_called()
+
+        app._on_sensitivity("1.5")
+        pose_engine.set_sensitivity.assert_called_once_with(1.5)
+        pose_engine.set_inventory_cursor_speed.assert_called_once_with(40)
+
+    def test_callback_noop_without_pose_engine(self):
+        # make_app's ResultDispatcher has no pose_engine attribute: the
+        # slider callback must be a safe no-op, mirroring the early
+        # construction path before a PoseDispatcher exists.
+        app = make_app()
+        app.inventory_cursor_speed_var = _Var(20)
+        app._on_inventory_cursor_speed("20")  # must not raise
+
+    def test_callback_noop_before_dispatcher_construction(self):
+        # Earliest possible fire: no dispatcher or slider var at all.
+        app = object.__new__(HandCraftApp)
+        app._on_inventory_cursor_speed("80")  # must not raise
+
+        # Var present but dispatcher still missing.
+        app.inventory_cursor_speed_var = _Var(80)
+        app._on_inventory_cursor_speed("80")  # must not raise
+
+
 if __name__ == "__main__":
     unittest.main()

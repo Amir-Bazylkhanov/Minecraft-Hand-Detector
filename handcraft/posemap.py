@@ -61,6 +61,7 @@ class PoseMapEngine:
     def __init__(self, config=None):
         self.centers: dict[str, tuple[float, float]] = {}
         self.sensitivity = 1.0
+        self.inventory_cursor_speed = 80.0
         self._cycle_hold = False
         self._cycle_last = None
         self.reset()
@@ -69,6 +70,19 @@ class PoseMapEngine:
         # Compat with the app slider: the thumb-cycle trigger has no
         # velocity threshold, so the value is only recorded.
         self.sensitivity = value
+
+    def set_inventory_cursor_speed(self, value):
+        """Set the fixed inventory cursor speed in px/s, clamped to
+        20..240. Invalid values (non-numeric, NaN, infinite) are rejected
+        and leave the current speed unchanged; the speed survives
+        reset() so a menu reopen keeps the tuned pace."""
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(value):
+            return
+        self.inventory_cursor_speed = min(240.0, max(20.0, value))
 
     def calibrate(self, hands: Mapping[str, Sequence[Point]]):
         """Record each visible wrist as a calibration center.
@@ -386,9 +400,10 @@ class PoseMapEngine:
                     # Fixed-speed inventory cursor: the axis-aligned .2
                     # palm deadzone decides which axes are active; the
                     # active offset axes give only the direction, which is
-                    # normalized so the TOTAL speed is 210 px/s no matter
-                    # how far the wrist travels — a diagonal moves at the
-                    # same total speed as a single axis. Center stops.
+                    # normalized so the TOTAL speed is
+                    # ``inventory_cursor_speed`` px/s no matter how far
+                    # the wrist travels — a diagonal moves at the same
+                    # total speed as a single axis. Center stops.
                     palm = palm_size(right)
                     x = (right[0][0] - self._cursor_center[0]) / palm
                     y = (right[0][1] - self._cursor_center[1]) / palm
@@ -396,7 +411,7 @@ class PoseMapEngine:
                     y = y if abs(y) > .2 else 0.
                     length = math.hypot(x, y)
                     if length:
-                        step = 210 * min(dt, .08) / length
+                        step = self.inventory_cursor_speed * min(dt, .08) / length
                         dx, dy = x * step, y * step
                 # Inventory attack: a thumb extend->fold cycle clicks the
                 # slot once at the CURRENT cursor — the click frame never

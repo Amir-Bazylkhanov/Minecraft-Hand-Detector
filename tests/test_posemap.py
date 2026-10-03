@@ -499,19 +499,19 @@ class TestPoseMap(unittest.TestCase):
         # inside the .2 palm deadzone (dx=.03 / palm .2 = .15): nothing
         result = self.engine.update({"right": moved(self.point, dx=.03)}, .2, True)
         self.assertEqual((result.look_dx, result.look_dy), (0, 0))
-        # beyond the deadzone: fixed 210 px/s total speed * dt
+        # beyond the deadzone: fixed 80 px/s total speed * dt (default)
         result = self.engine.update({"right": moved(self.point, dx=.1)}, .25, True)
         self.assertEqual(result.look_dy, 0)
-        self.assertAlmostEqual(result.look_dx, 210 * .05)
+        self.assertAlmostEqual(result.look_dx, 80 * .05)
         # dt clamps at .08 around the same fixed center, which never
         # recenters mid-session
         result = self.engine.update({"right": moved(self.point, dx=.1)}, .45, True)
-        self.assertAlmostEqual(result.look_dx, 210 * .08)
-        # a diagonal keeps the same TOTAL speed: magnitude is 210 * dt
+        self.assertAlmostEqual(result.look_dx, 80 * .08)
+        # a diagonal keeps the same TOTAL speed: magnitude is 80 * dt
         result = self.engine.update({"right": moved(self.point, dx=-.1, dy=.1)}, .5, True)
         self.assertLess(result.look_dx, 0)
         self.assertGreater(result.look_dy, 0)
-        self.assertAlmostEqual(math.hypot(result.look_dx, result.look_dy), 210 * .05)
+        self.assertAlmostEqual(math.hypot(result.look_dx, result.look_dy), 80 * .05)
         self.assertAlmostEqual(result.look_dx, -result.look_dy)
         # returning to the locked center stops the movement exactly
         result = self.engine.update({"right": self.point}, .55, True)
@@ -522,7 +522,7 @@ class TestPoseMap(unittest.TestCase):
         # near (.1 -> offset .5) and far (.25 -> offset 1.25) wrists move
         # the cursor at the same total speed for the same dt
         near = self.engine.update({"right": moved(self.point, dx=.1)}, .2, True)
-        self.assertAlmostEqual(near.look_dx, 210 * .05)
+        self.assertAlmostEqual(near.look_dx, 80 * .05)
         self.assertEqual(near.look_dy, 0)
         far = self.engine.update({"right": moved(self.point, dx=.25)}, .25, True)
         self.assertAlmostEqual(far.look_dx, near.look_dx)
@@ -530,11 +530,51 @@ class TestPoseMap(unittest.TestCase):
         near_diag = self.engine.update(
             {"right": moved(self.point, dx=.1, dy=-.1)}, .3, True)
         self.assertAlmostEqual(math.hypot(near_diag.look_dx, near_diag.look_dy),
-                               210 * .05)
+                               80 * .05)
         far_diag = self.engine.update(
             {"right": moved(self.point, dx=.3, dy=-.3)}, .35, True)
         self.assertAlmostEqual(math.hypot(far_diag.look_dx, far_diag.look_dy),
                                math.hypot(near_diag.look_dx, near_diag.look_dy))
+
+    def test_inventory_cursor_speed_defaults_to_80(self):
+        self.assertAlmostEqual(self.engine.inventory_cursor_speed, 80.)
+
+    def test_inventory_cursor_speed_configurable(self):
+        self.anchor_cursor()
+        self.engine.set_inventory_cursor_speed(120)
+        self.assertAlmostEqual(self.engine.inventory_cursor_speed, 120.)
+        result = self.engine.update({"right": moved(self.point, dx=.1)}, .2, True)
+        self.assertAlmostEqual(result.look_dx, 120 * .05)
+        # constant total speed still holds at the tuned rate: diagonal
+        # magnitude equals single-axis speed for the same dt
+        diag = self.engine.update(
+            {"right": moved(self.point, dx=.1, dy=-.1)}, .25, True)
+        self.assertAlmostEqual(math.hypot(diag.look_dx, diag.look_dy), 120 * .05)
+        # the .2 deadzone is unchanged by the tuning
+        result = self.engine.update({"right": moved(self.point, dx=.03)}, .3, True)
+        self.assertEqual((result.look_dx, result.look_dy), (0, 0))
+
+    def test_set_inventory_cursor_speed_clamps_to_20_240(self):
+        self.engine.set_inventory_cursor_speed(5)
+        self.assertAlmostEqual(self.engine.inventory_cursor_speed, 20.)
+        self.engine.set_inventory_cursor_speed(1000)
+        self.assertAlmostEqual(self.engine.inventory_cursor_speed, 240.)
+
+    def test_set_inventory_cursor_speed_rejects_invalid_unchanged(self):
+        self.engine.set_inventory_cursor_speed(100)
+        for invalid in (None, "fast", float("nan"), float("inf"),
+                        float("-inf"), object()):
+            self.engine.set_inventory_cursor_speed(invalid)
+            self.assertAlmostEqual(self.engine.inventory_cursor_speed, 100.,
+                                   repr(invalid))
+
+    def test_inventory_cursor_speed_survives_reset(self):
+        self.engine.set_inventory_cursor_speed(150)
+        self.engine.reset()
+        self.assertAlmostEqual(self.engine.inventory_cursor_speed, 150.)
+        self.anchor_cursor()
+        result = self.engine.update({"right": moved(self.point, dx=.1)}, .2, True)
+        self.assertAlmostEqual(result.look_dx, 150 * .05)
 
     def test_inventory_cursor_state_independent_from_look(self):
         # a locked gameplay look center never leaks into the menu, and a

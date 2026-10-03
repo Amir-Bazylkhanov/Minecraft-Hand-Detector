@@ -386,6 +386,19 @@ class PosePipelineTests(unittest.TestCase):
         self.assertFalse(self.ctl.armed)
         self.assertEqual(self.adapter.calls, [])
 
+    def test_inventory_cursor_speed_tuning_reaches_pointer_pixels(self):
+        self.engine.set_inventory_state(True)
+        point = {'right': pose((0,))}
+        self.feed(point, 0)
+        self.feed(point, .15)
+        # default speed: 80 px/s * dt=.05 rounds to a 4 px relative move
+        self.feed({'right': moved(point['right'], dx=.1)}, .2)
+        self.assertIn(('move_relative', (4, 0)), self.adapter.calls)
+        # tuning the engine speed scales the injected pixels accordingly
+        self.dispatch.pose_engine.set_inventory_cursor_speed(240)
+        self.feed({'right': moved(point['right'], dx=.1)}, .25)
+        self.assertIn(('move_relative', (12, 0)), self.adapter.calls)
+
 
 class MouseAdapterTests(unittest.TestCase):
     def test_timed_right_click_and_emergency_release(self):
